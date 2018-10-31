@@ -1,5 +1,5 @@
 # Splunk
-Splunk (other)
+Other Splunk scripts which do not fit into the SplunkAdmins application
 
 ## Purpose?
 Transfer Splunk knowledge objects from 1 search head to another without going through the deployer (except for lookup files, they cannot be created via REST API as such) 
@@ -13,27 +13,26 @@ A custom written python script that can be run via:
 
 Creating knowledge objects and pushing them out via the deployer is frustrating as they cannot be deleted from the search head, they must now be removed from the deployer. 
 
-Splunk does not supply any scripts for search head to search head knowledge object transfer so I've created one.  
+Splunk does not supply any scripts for search head to search head knowledge object transfer so I've created one. While you can copy from 1 search head cluster to another search head cluster you either need to trigger the replication of the knowledge object (via a save) or restart all search head cluster members with a copy of the data, this script avoids these issues by working through the REST API
 
 ## Example usage
 ```splunk cmd python transfersplunkknowledgeobjects.py -srcURL "https://thesourceserver:8089" -destURL "https://localhost:8089" -srcUsername "admin" -srcPassword "removed" -srcApp sourceAppName -destUsername "admin" -destPassword "changeme" -destApp destAppName -printPasswords -all```
 
-This transfers knowledge objects from thesourceserver to localhost with the username of admin, it also uses  the username of "admin" on the localhost to create the new objects. 
+This transfers knowledge objects from thesourceserver to localhost with the username of admin, it also uses the login of "admin" on the localhost to create the new objects (note that the objects are created with the same owner as the source server unless the ```-destOwner``` option is used)
 
-The source application on "thesourceserver" is sourceAppName and the destination app on the localhost is destAppName 
+The source application on "thesourceserver" is sourceAppName and the destination app on the localhost server is destAppName 
 
-If any issues are encountered a ```-debugMode``` switch will supply additional logging, also note that the -all switch is used to transfer all knowledge objects, this can be controlled by using ```-tags, -macros, -eventtypes``` or similar 
+If any issues are encountered a ```-debugMode``` switch will supply additional logging, also note that the ```-all``` switch is used to transfer all knowledge objects, if you do not wish to transfer all then you can send in a controlled list of object types ```-tags, -macros, -eventtypes``` or similar 
 
-Here's an example of transferring one users objects over and re-owning them to a new owner: 
+Here's an example of transferring one specific users objects over and re-owning them to a new owner: 
 
 ```splunk cmd python transfersplunkknowledgeobjects.py -srcURL "https://thesourceserver:8089" -destURL "https://localhost:8089" -srcUsername "admin" -srcPassword "removed" -srcApp sourceAppName -includeOwner aSpecificIndividual -destOwner <another username to own the objects>```
 
-
 ## Parameters
 
-splunk cmd python transfersplunkknowledgeobjects.py -h 
+```splunk cmd python transfersplunkknowledgeobjects.py -h ```
 
-Provides the full list below 
+Provides the full list, a summary of the main options are below 
 
 ### Controlling which knowledge objects are transferred
 ```-all``` (optional) migrate all knowledge objects  
