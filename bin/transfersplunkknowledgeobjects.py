@@ -244,7 +244,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                             logger.debug("%s of type %s found key/value of %s=%s in app context %s" % (info["name"], type, attribName, theAttribute.text, app))
                             
                             #Hack to deal with datamodel tables not working as expected
-                            if attribName == "description" and type=="datamodels" and info["dataset.type"] == "table":
+                            if attribName == "description" and type=="datamodels" and info.has_key("dataset.type") and info["dataset.type"] == "table":
                                 #For an unknown reason the table datatype has extra fields in the description which must be removed
                                 #however we have to find them first...
                                 res = json.loads(theAttribute.text)
