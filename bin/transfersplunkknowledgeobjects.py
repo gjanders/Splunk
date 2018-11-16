@@ -421,7 +421,7 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
     logger.debug("Running requests.get() on %s with username %s in app %s for type macro" % (url, srcUsername, app))
     res = requests.get(url, auth=(srcUsername, srcPassword), verify=False)
     if (res.status_code != requests.codes.ok):
-        logger.error("%s of type macro in app %s, URL %s status code %s reason %s, response '%s'" % (name, app, url, res.status_code, res.reason, res.text))
+        logger.error("type macro in app %s, URL %s status code %s reason %s, response '%s'" % (app, url, res.status_code, res.reason, res.text))
     
     #Parse the XML tree
     root = ET.fromstring(res.text)
