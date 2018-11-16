@@ -81,6 +81,9 @@ parser.add_argument('-dashboards', help='(optional) migrate dashboards (user int
 parser.add_argument('-savedsearches', help='(optional) migrate saved search objects (this includes reports/alerts)', action='store_true')
 parser.add_argument('-navMenu', help='(optional) migrate navigation menus', action='store_true')
 parser.add_argument('-navMenuWithDefaultOverride', help='(optional) migrate navigation menus *and* overwrite the default menu in the dest app', action='store_true')
+parser.add_argument('-collections', help='(optional) migrate collections (kvstore collections)', action='store_true')
+parser.add_argument('-times', help='(optional) migrate time labels (conf-times)', action='store_true')
+parser.add_argument('-panels', help='(optional) migrate pre-built dashboard panels', action='store_true')
 parser.add_argument('-debugMode', help='(optional) turn on DEBUG level logging (defaults to INFO)', action='store_true')
 parser.add_argument('-printPasswords', help='(optional) print passwords in the log files (dev only)', action='store_true')
 parser.add_argument('-includeEntities', help='comma separated list of object values to include (double quoted)')
@@ -342,6 +345,11 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             url = "%s/servicesNS/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint)
             logger.info("Attempting to create %s with name %s on URL %s in app %s" % (type, name, url, app))
 
+        #Hack to handle the times (conf-times) not including required attributes for creation in existing entries
+        #not sure how this happens but it fails to create in 7.0.5 but works fine in 7.2.x, fixing for the older versions
+        if type=="times (conf-times)" and not payload.has_key("is_sub_menu"):
+            payload["is_sub_menu"] = "0"
+        
         urlEncodedName = urllib.quote_plus(name)
         
         deletionURL = ""
@@ -421,7 +429,7 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
     logger.debug("Running requests.get() on %s with username %s in app %s for type macro" % (url, srcUsername, app))
     res = requests.get(url, auth=(srcUsername, srcPassword), verify=False)
     if (res.status_code != requests.codes.ok):
-        logger.error("type macro in app %s, URL %s status code %s reason %s, response '%s'" % (app, url, res.status_code, res.reason, res.text))
+        logger.error("%s of type macro in app %s, URL %s status code %s reason %s, response '%s'" % (name, app, url, res.status_code, res.reason, res.text))
     
     #Parse the XML tree
     root = ET.fromstring(res.text)
@@ -699,6 +707,34 @@ def datamodels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, 
 
 ###########################
 #
+# collections
+#
+##########################
+def collections(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+    ignoreList = [ "eai:appName", "eai:userName", "type" ]
+    #nobody is the only username that can be used when working with collections
+    return runQueries(app, "/storage/collections/config", "collections (kvstore definition)", ignoreList, destApp,destOwner="nobody", noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+
+###########################
+#
+# time labels (conf-times)
+#
+##########################
+def times(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+    ignoreList = [ "disabled", "eai:appName", "eai:userName", "header_label" ]
+    return runQueries(app, "/configs/conf-times", "times (conf-times)", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+
+###########################
+#
+# panels
+#
+##########################
+def panels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+    ignoreList = [ "disabled", "eai:digest", "panel.title", "rootNode", "eai:appName", "eai:userName" ]
+    return runQueries(app, "/data/ui/panels", "pre-built dashboard panels", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    
+###########################
+#
 # lookups (definition/automatic)
 #
 ##########################
@@ -781,6 +817,12 @@ lookupDefinitionsSuccess = []
 lookupDefinitionsFailure = []
 automaticLookupsSuccess = []
 automaticLookupsFailure = []
+collectionsSuccess = []
+collectionsFailure = []
+timesSuccess = []
+timesFailure = []
+panelsSuccess = []
+panelsFailure = []
 
 #If the all switch is provided, migrate everything
 if args.all:
@@ -794,6 +836,9 @@ if args.all:
     args.savedsearches = True
     args.navMenu = True
     args.eventtypes = True
+    args.collections = True
+    args.times = True
+    args.panels = True
 
 #All field related switches on anything under Settings -> Fields
 if args.allFieldRelated:
@@ -868,6 +913,11 @@ if args.fieldExtraction:
     (fieldextractionsCreationSuccess, fieldextractionsCreationFailure) = fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
     logger.info("End fieldExtraction transfer")
 
+if args.collections:
+    logger.info("Begin collections (kvstore definition) transfer")
+    (collectionsSuccess, collectionsFailure) = collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    logger.info("End collections (kvstore definition) transfer")
+
 if args.lookupDefinition:
     logger.info("Begin lookupDefinitions transfer")
     (lookupDefinitionsSuccess, lookupDefinitionsFailure) = lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
@@ -878,13 +928,23 @@ if args.automaticLookup:
     (automaticLookupsSuccess, automaticLookupsFailure) = automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
     logger.info("End automaticLookup transfer")
 
+if args.times:
+    logger.info("Begin times (conf-times) transfer")
+    (timesSuccess, timesFailure) = times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    logger.info("End times (conf-times) transfer")
+
+if args.panels:
+    logger.info("Begin pre-built dashboard panels transfer")
+    (panelsSuccess, panelsFailure) = panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    logger.info("End pre-built dashboard panels transfer")
+    
 if args.datamodels:
     logger.info("Begin datamodels transfer")
     (datamodelSuccess, datamodelFailure) = datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
     logger.info("End datamodels transfer")
 
 if args.dashboards:
-    logger.info("Begin databoards transfer")
+    logger.info("Begin dashboards transfer")
     (dashboardCreationSuccess, dashboardCreationFailure) = dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
     logger.info("End dashboards transfer")    
 
@@ -930,6 +990,9 @@ logDeletion(savedsearchCreationSuccess, args.printPasswords, destUsername, destP
 logDeletion(workflowActionsSuccess, args.printPasswords, destUsername, destPassword)
 logDeletion(sourcetypeRenamingSuccess, args.printPasswords, destUsername, destPassword)
 logDeletion(navMenuSuccess, args.printPasswords, destUsername, destPassword)
+logDeletion(collectionsSuccess, args.printPasswords, destUsername, destPassword)
+logDeletion(timesSuccess, args.printPasswords, destUsername, destPassword)
+logDeletion(panelsSuccess, args.printPasswords, destUsername, destPassword)
 
 handleFailureLogging(macroCreationFailure, "macros", srcApp)
 handleFailureLogging(tagsFailure, "tags", srcApp)
@@ -946,6 +1009,9 @@ handleFailureLogging(savedsearchCreationFailure, "savedsearch", srcApp)
 handleFailureLogging(workflowActionsFailure, "workflowactions", srcApp)
 handleFailureLogging(sourcetypeRenamingFailure, "sourcetype-renaming", srcApp)
 handleFailureLogging(navMenuFailure, "navMenu", srcApp)
+handleFailureLogging(collectionsFailure, "collections", srcApp)
+handleFailureLogging(timesFailure, "collections", srcApp)
+handleFailureLogging(panelsFailure, "collections", srcApp)
 
 logStats(macroCreationSuccess, macroCreationFailure, "macros", srcApp)
 logStats(tagsSuccess, tagsFailure, "tags", srcApp)
@@ -962,6 +1028,9 @@ logStats(savedsearchCreationSuccess, savedsearchCreationFailure, "savedsearch", 
 logStats(workflowActionsSuccess, workflowActionsFailure, "workflowactions", srcApp)
 logStats(sourcetypeRenamingSuccess, sourcetypeRenamingFailure, "sourcetype-renaming", srcApp)
 logStats(navMenuSuccess, navMenuFailure, "navMenu", srcApp)
+logStats(collectionsSuccess, collectionsFailure, "collections", srcApp)
+logStats(timesSuccess, timesFailure, "times (conf-times)", srcApp)
+logStats(panelsSuccess, panelsFailure, "pre-built dashboard panels", srcApp)
 
 logging.info("The undo command is: grep -o \"curl.*DELETE.*\" /tmp/transfer_knowledgeobj.log | grep -v \"curl\.\*DELETE\"")
 logging.info("Done")
