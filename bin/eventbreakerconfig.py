@@ -141,7 +141,7 @@ for adir in appDirsRequired.keys():
                 result2 = regex3.match(line)
                 if result != None or result2 != None:
                     #We know the directory looks something like
-                    #/opt/splunk/etc/deployment-apps/parsing/Splunk_TA_windows/default
+                    #/opt/splunk/etc/deployment-apps/Splunk_TA_windows/default
                     #We use the basename to determine if it's local or default
                     #then we use dirname + basename to determine the app name above
                     curbase = os.path.basename(dir)
