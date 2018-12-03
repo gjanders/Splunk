@@ -71,7 +71,7 @@ parser.add_argument('-allFieldRelated', help='(optional) migrate all objects und
 parser.add_argument('-calcFields', help='(optional) migrate calc fields knowledge objects', action='store_true')
 parser.add_argument('-fieldAlias', help='(optional) migrate field alias knowledge objects', action='store_true')
 parser.add_argument('-fieldExtraction', help='(optional) migrate field extraction knowledge objects', action='store_true')
-parser.add_argument('-fieldTransforms', help='(optional) migrate field transformation knowledge objects', action='store_true')
+parser.add_argument('-fieldTransforms', help='(optional) migrate field transformation knowledge objects (excludes nullQueue formatted transforms)', action='store_true')
 parser.add_argument('-lookupDefinition', help='(optional) migrate lookup definition knowledge objects', action='store_true')
 parser.add_argument('-workflowActions', help='(optional) migrate workflow actions', action='store_true')
 parser.add_argument('-sourcetypeRenaming', help='(optional) migrate sourcetype renaming', action='store_true')
@@ -91,6 +91,7 @@ parser.add_argument('-excludeEntities', help='comma separated list of object val
 parser.add_argument('-includeOwner', help='comma separated list of owners objects that should be transferred (double quoted)')
 parser.add_argument('-excludeOwner', help='comma separated list of owners objects that should be transferred (double quoted)')
 parser.add_argument('-privateOnly', help='Only transfer private objects')
+parser.add_argument('-viewstates', help='(optional) migrate viewstates', action='store_true')
 
 args = parser.parse_args()
 
@@ -285,7 +286,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                     elif type=="automatic lookup" and info["name"].find("LOOKUP-") == 0:
                         logger.debug("Overriding name of %s of type %s in app context %s with owner %s to new name of %s" % (info["name"], type, app, info["owner"], info["name"][7:]))
                         info["name"] = info["name"][7:]
-                    
+                
                 #Some attributes are not used to create a new version so we remove them...(they may have been used above first so we kept them until now)
                 for attribName in fieldIgnoreList:
                     if info.has_key(attribName):
@@ -295,12 +296,17 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                 sharing = info["sharing"]
                 if not infoList.has_key(sharing):
                     infoList[sharing] = []
-                infoList[sharing].append(info)
-                logger.info("Recording %s info for %s in app context %s with owner %s" % (type, info["name"], app, info["owner"]))
+                    
+                #REST API does not support the creation of null queue entries as tested in 7.0.5 and 7.2.1, these are also unused on search heads anyway so ignoring these with a warning
+                if type == "fieldtransformations" and info.has_key("FORMAT") and info["FORMAT"] == "nullQueue":
+                    logger.warn("Dropping the transfer of %s of type %s in app context %s with owner %s because nullQueue entries cannot be created via REST API (and they are not required in search heads)" % (info["name"], type, app, info["owner"]))
+                else:
+                    infoList[sharing].append(info)
+                    logger.info("Recording %s info for %s in app context %s with owner %s" % (type, info["name"], app, info["owner"]))
     
     app = destApp
-
-    #Cycle through each one we need to migrate, we do globa/app/user as users can duplicate app level objects with the same names
+        
+    #Cycle through each one we need to migrate, we do global/app/user as users can duplicate app level objects with the same names
     #but we create everything at user level first then re-own it so global/app must happen first
     if infoList.has_key("global"):
         logger.debug("Now running runQueriesPerList with knowledge objects of type %s with global level sharing in app %s" % (type, app))
@@ -429,7 +435,7 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
     logger.debug("Running requests.get() on %s with username %s in app %s for type macro" % (url, srcUsername, app))
     res = requests.get(url, auth=(srcUsername, srcPassword), verify=False)
     if (res.status_code != requests.codes.ok):
-        logger.error("%s of type macro in app %s, URL %s status code %s reason %s, response '%s'" % (name, app, url, res.status_code, res.reason, res.text))
+        logger.error("Type macro in app %s, URL %s status code %s reason %s, response '%s'" % (app, url, res.status_code, res.reason, res.text))
     
     #Parse the XML tree
     root = ET.fromstring(res.text)
@@ -656,7 +662,7 @@ def fieldextractions(app, destApp, destOwner, noPrivate, noDisabled, includeEnti
     return runQueries(app, "/data/props/extractions", "fieldextractions", ignoreList, destApp, {}, { "Inline" : "EXTRACT", "Uses transform" : "REPORT" }, "attribute", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
 
 def fieldtransformations(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
-    ignoreList = [ "attribute", "DEFAULT_VALUE", "DEPTH_LIMIT", "LOOKAHEAD", "MATCH_LIMIT", "WRITE_META", "eai:appName", "eai:userName" ]
+    ignoreList = [ "attribute", "DEFAULT_VALUE", "DEPTH_LIMIT", "LOOKAHEAD", "MATCH_LIMIT", "WRITE_META", "eai:appName", "eai:userName", "DEST_KEY" ]
     return runQueries(app, "/data/transforms/extractions", "fieldtransformations", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
     
 def workflowactions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
@@ -714,6 +720,16 @@ def collections(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
     ignoreList = [ "eai:appName", "eai:userName", "type" ]
     #nobody is the only username that can be used when working with collections
     return runQueries(app, "/storage/collections/config", "collections (kvstore definition)", ignoreList, destApp,destOwner="nobody", noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+
+###########################
+#
+# viewstates
+#
+##########################
+def viewstates(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+    ignoreList = [ "eai:appName", "eai:userName" ]
+    #nobody is the only username that can be used when working with collections
+    return runQueries(app, "/configs/conf-viewstates", "viewstates", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
 
 ###########################
 #
@@ -819,6 +835,8 @@ automaticLookupsSuccess = []
 automaticLookupsFailure = []
 collectionsSuccess = []
 collectionsFailure = []
+viewstatesSuccess = []
+viewstatesFailure = []
 timesSuccess = []
 timesFailure = []
 panelsSuccess = []
@@ -839,6 +857,7 @@ if args.all:
     args.collections = True
     args.times = True
     args.panels = True
+    args.viewstates = True
 
 #All field related switches on anything under Settings -> Fields
 if args.allFieldRelated:
@@ -933,6 +952,11 @@ if args.times:
     (timesSuccess, timesFailure) = times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
     logger.info("End times (conf-times) transfer")
 
+if args.viewstates:
+    logger.info("Begin viewstates transfer")
+    (viewstatesSuccess, viewstatesFailure) = viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    logger.info("End viewstates transfer")
+    
 if args.panels:
     logger.info("Begin pre-built dashboard panels transfer")
     (panelsSuccess, panelsFailure) = panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
@@ -984,6 +1008,7 @@ logDeletion(fieldextractionsCreationSuccess, args.printPasswords, destUsername, 
 logDeletion(fieldTransformationsSuccess, args.printPasswords, destUsername, destPassword)
 logDeletion(lookupDefinitionsSuccess, args.printPasswords, destUsername, destPassword)
 logDeletion(automaticLookupsSuccess, args.printPasswords, destUsername, destPassword)
+logDeletion(viewstatesSuccess, args.printPasswords, destUsername, destPassword)
 logDeletion(datamodelSuccess, args.printPasswords, destUsername, destPassword)
 logDeletion(dashboardCreationSuccess, args.printPasswords, destUsername, destPassword)
 logDeletion(savedsearchCreationSuccess, args.printPasswords, destUsername, destPassword)
@@ -1003,6 +1028,7 @@ handleFailureLogging(fieldextractionsCreationFailure, "fieldextractions", srcApp
 handleFailureLogging(fieldTransformationsFailure, "fieldtransformations", srcApp)
 handleFailureLogging(lookupDefinitionsFailure, "lookupdef", srcApp)
 handleFailureLogging(automaticLookupsFailure, "automatic lookup", srcApp)
+handleFailureLogging(viewstatesFailure, "viewstates", srcApp)
 handleFailureLogging(datamodelFailure, "datamodels", srcApp)
 handleFailureLogging(dashboardCreationFailure, "dashboard", srcApp)
 handleFailureLogging(savedsearchCreationFailure, "savedsearch", srcApp)
@@ -1022,6 +1048,7 @@ logStats(fieldextractionsCreationSuccess, fieldextractionsCreationFailure, "fiel
 logStats(fieldTransformationsSuccess, fieldTransformationsFailure, "fieldtransformations", srcApp)
 logStats(lookupDefinitionsSuccess, lookupDefinitionsFailure, "lookupdef", srcApp)
 logStats(automaticLookupsSuccess, automaticLookupsFailure, "automatic lookup", srcApp)
+logStats(viewstatesSuccess, viewstatesFailure, "viewstates", srcApp)
 logStats(datamodelSuccess, datamodelFailure, "datamodels", srcApp)
 logStats(dashboardCreationSuccess, dashboardCreationFailure, "dashboard", srcApp)
 logStats(savedsearchCreationSuccess, savedsearchCreationFailure, "savedsearch", srcApp)
