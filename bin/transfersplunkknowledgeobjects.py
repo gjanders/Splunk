@@ -356,8 +356,6 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
         if type=="times (conf-times)" and not payload.has_key("is_sub_menu"):
             payload["is_sub_menu"] = "0"
         
-        urlEncodedName = urllib.quote_plus(name)
-        
         deletionURL = ""
         logger.debug("Attempting to create %s with name %s on URL %s with payload '%s' in app %s" % (type, name, url, payload, app))
         res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
