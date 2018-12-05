@@ -246,6 +246,11 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                                 theAttribute.text = valueAliases[theAttribute.text]
                             
                             logger.debug("%s of type %s found key/value of %s=%s in app context %s" % (info["name"], type, attribName, theAttribute.text, app))
+
+                            #Yet another hack, this time to deal with collections using accelrated_fields.<value> when looking at it via REST GET requests, but
+                            #requiring accelerated_fields to be used when POST'ing the value to create the collection!
+                            if type == "collections (kvstore definition)" and attribName.find("accelrated_fields") == 0:
+                                attribName = "accelerated_fields" + attribName[17:]
                             
                             #Hack to deal with datamodel tables not working as expected
                             if attribName == "description" and type=="datamodels" and info.has_key("dataset.type") and info["dataset.type"] == "table":
@@ -270,6 +275,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                             #We keep the attributes that are not None
                             elif theAttribute.text:
                                 info[attribName] = theAttribute.text
+                            
             #If we have not set the keep flag to False
             if keep:
                 if nameOverride != "":
@@ -797,6 +803,10 @@ def logDeletion(successList, printPasswords, destUsername, destPassword):
     logDeletionScriptInLogs(successList, printPasswords, destUsername, destPassword)    
     #printDeletionToConsole(successList, printPasswords, destUsername, destPassword)
 
+#helper function as per https://stackoverflow.com/questions/31433989/return-copy-of-dictionary-excluding-specified-keys
+def without_keys(d, keys):
+    return {x: d[x] for x in d if x not in keys}
+
 ###########################
 #
 # Success / Failure lists
@@ -889,6 +899,9 @@ includeOwner = None
 if args.includeOwner:
     includeOwner = [x.strip() for x in args.includeOwner.split(',')]
 
+excludedList = [ "srcPassword", "destPassword" ]
+cleanArgs = without_keys(vars(args), excludedList)
+logger.info("transfer splunk knowledge objects run with arguments %s" % (cleanArgs))
 ###########################
 #
 # Run the required functions based on the args
