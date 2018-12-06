@@ -275,7 +275,10 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                             #We keep the attributes that are not None
                             elif theAttribute.text:
                                 info[attribName] = theAttribute.text
-                            
+                            #A hack related to automatic lookups, where a None / empty value must be sent through as "", otherwise requests will strip the entry from the
+                            #post request. In the case of an automatic lookup we want to send through the empty value...
+                            elif type=="automatic lookup" and theAttribute.text == None:
+                                info[attribName] = ""
             #If we have not set the keep flag to False
             if keep:
                 if nameOverride != "":
