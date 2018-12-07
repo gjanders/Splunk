@@ -265,7 +265,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
 
                                 for field in fieldCopy:
                                     name = field['fieldName']
-                                    print "name is " + name
+                                    logger.debug("name is " + name)
                                     if name != "RootObject":
                                         index = fields.index(field)
                                         del fields[index]
@@ -389,7 +389,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                             creationSuccess.append(deletionURL)
                 elif child.tag.endswith("messages"):
                     for innerChild in child:
-                        if innerChild.tag.endswith("msg") and innerChild.attrib["type"]=="ERROR" or innerChild.attrib["WARN"]:
+                        if innerChild.tag.endswith("msg") and innerChild.attrib["type"]=="ERROR" or innerChild.attrib.has_key("WARN"):
                             logger.warn("%s of type %s in app %s had a warn/error message of '%s' owner of %s" % (name, type, app, innerChild.text, owner))
                             #Sometimes the object appears to be create but is unusable which is annoying, at least provide the warning to the logs
                             #and record it in the failure list for investigation
@@ -405,6 +405,11 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 if (res.status_code != requests.codes.ok):
                     logger.error("%s of type %s in app %s with URL %s status code %s reason %s, response '%s', owner of %s" % (name, type, app, url, res.status_code, res.reason, res.text, owner))
                     creationFailure.append(name)
+                    if res.status_code == 409:
+                        #Delete the duplicate private object rather than leave it there for no purpose
+                        url = url[:-4]
+                        logger.warn("Deleting the private object as it could not be re-owned %s of type %s in app %s with URL %s" % (name, type, app, url))
+                        requests.delete(url, auth=(destUsername,destPassword), verify=False)
                 else:
                     logger.debug("%s of type %s in app %s, ownership changed with response: %s, will update deletion URL, owner %s, sharing level %s" % (name, type, app, res.text, owner, sharing))
                     
@@ -583,6 +588,11 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroCreationSuccess
         if (res.status_code != requests.codes.ok and res.status_code != 201):
             logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s', owner %s" % (name, app, url, res.status_code, res.reason, res.text, owner))
             macroCreationFailure.append(name)
+            if res.status_code == 409:
+                #Delete the duplicate private object rather than leave it there for no purpose
+                url = url[:-4]
+                logger.warn("Deleting the private object as it could not be re-owned %s of type macro in app %s with URL %s" % (name, app, url))
+                requests.delete(url, auth=(destUsername,destPassword), verify=False)
         else:
             #Macros always delete with the username in this URL context
             deletionURL = "%s/servicesNS/%s/%s/configs/conf-macros/%s" % (splunk_rest_dest, owner, app, name)
@@ -647,7 +657,7 @@ def dashboards(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, 
 # 
 ###########################
 def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
-    ignoreList = [ "embed.enabled" ]
+    ignoreList = [ "embed.enabled", "triggered_alert_count" ]
     return runQueries(app, "/saved/searches", "savedsearches", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
 
 ###########################
@@ -764,7 +774,7 @@ def panels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
 def lookupDefinitions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
     ignoreList = [ "disabled", "eai:appName", "eai:userName", "CAN_OPTIMIZE", "CLEAN_KEYS", "DEPTH_LIMIT", "KEEP_EMPTY_VALS", "LOOKAHEAD", "MATCH_LIMIT", "MV_ADD", "SOURCE_KEY", "WRITE_META", "fields_array", "type" ]
     #If override we override the default nav menu of the destination app
-    return runQueries(app, "/data/transforms/lookups", "datamodels", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/transforms/lookups", "lookup definition", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
 
 def automaticLookups(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
     ignoreList = [ "attribute", "type", "value" ]
