@@ -92,6 +92,7 @@ parser.add_argument('-includeOwner', help='comma separated list of owners object
 parser.add_argument('-excludeOwner', help='comma separated list of owners objects that should be transferred (double quoted)')
 parser.add_argument('-privateOnly', help='Only transfer private objects')
 parser.add_argument('-viewstates', help='(optional) migrate viewstates', action='store_true')
+parser.add_argument('-ignoreViewstatesAttribute', help='(optional) when creating saved searches strip the vsid parameter/attribute before attempting to create the saved search', action='store_true')
 
 args = parser.parse_args()
 
@@ -377,6 +378,8 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             #Parse the result to find the new URL to use
             root = ET.fromstring(res.text)
             infoList = []
+            
+            creationSuccessRes = False
             for child in root:
                 #Working per entry in the results
                 if child.tag.endswith("entry"):
@@ -387,6 +390,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                             deletionURL = "%s/%s" % (splunk_rest_dest, innerChild.attrib["href"])
                             logger.debug("%s of type %s in app %s recording deletion URL as %s" % (name, type, app, deletionURL))
                             creationSuccess.append(deletionURL)
+                            creationSuccessRes = True
                 elif child.tag.endswith("messages"):
                     for innerChild in child:
                         if innerChild.tag.endswith("msg") and innerChild.attrib["type"]=="ERROR" or innerChild.attrib.has_key("WARN"):
@@ -410,6 +414,11 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                         url = url[:-4]
                         logger.warn("Deleting the private object as it could not be re-owned %s of type %s in app %s with URL %s" % (name, type, app, url))
                         requests.delete(url, auth=(destUsername,destPassword), verify=False)
+                        
+                        #If we previously recorded success, remove that entry
+                        if creationSuccessRes:
+                            creationSuccessRes = False
+                            creationSuccess.pop()
                 else:
                     logger.debug("%s of type %s in app %s, ownership changed with response: %s, will update deletion URL, owner %s, sharing level %s" % (name, type, app, res.text, owner, sharing))
                     
@@ -428,6 +437,8 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                                     if len(creationSuccess) > 1:
                                         creationSuccess.pop()
                                     creationSuccess.append(deletionURL)
+            if creationSuccessRes:
+                logger.info("Created %s of type %s in app %s owner is %s sharing level %s" % (name, type, app, owner, sharing))
 
 ###########################
 #
@@ -583,7 +594,8 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroCreationSuccess
         #I cannot seem to get this working on the /conf URL but this works so good enough, and it's in the REST API manual...
         #servicesNS/-/search/properties/macros
         #__stanza = <name>
-                
+        
+        macroCreationSuccessRes = False
         res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
         if (res.status_code != requests.codes.ok and res.status_code != 201):
             logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s', owner %s" % (name, app, url, res.status_code, res.reason, res.text, owner))
@@ -598,6 +610,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroCreationSuccess
             deletionURL = "%s/servicesNS/%s/%s/configs/conf-macros/%s" % (splunk_rest_dest, owner, app, name)
             logger.debug("%s of type macro in app %s recording deletion URL as %s with owner %s" % (name, app, deletionURL, owner))
             macroCreationSuccess.append(deletionURL)
+            macroCreationSuccessRes = True
 
         logger.debug("%s of type macro in app %s, received response of: '%s'" % (name, app, res.text))
         
@@ -616,23 +629,33 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroCreationSuccess
         if (res.status_code != requests.codes.ok and res.status_code != 201):
             logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s'" % (name, app, url, res.status_code, res.reason, res.text))
             macroCreationFailure.append(name)
-        
-        #Re-owning it, I've switched URL's again here but it seems to be working so will not change it
-        url = "%s/servicesNS/%s/%s/configs/conf-macros/%s/acl" % (splunk_rest_dest, owner, app, name)
-        payload = { "owner": owner, "sharing" : sharing }
-        logger.info("Attempting to change ownership of macro %s via URL %s to owner %s in app %s with sharing %s" % (name, url, owner, app, sharing))
-        res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
-        if (res.status_code != requests.codes.ok):
-            logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s', owner %s sharing level %s" % (name, app, url, res.status_code, res.reason, res.text, owner, sharing))
-            #Hardcoded deletion URL as if this fails it should be this URL...(not parsing the XML here to confirm but this works fine)
-            deletionURL = "%s/servicesNS/%s/%s/configs/conf-macros/%s" % (splunk_rest_dest, owner, app, name)
-            logger.info("%s of type macro in app %s recording deletion URL as user URL due to change ownership failure %s" % (name, app, deletionURL))
-            #Remove the old record
-            if len(macroCreationSuccess) > 1:
+            if macroCreationSuccessRes:
                 macroCreationSuccess.pop()
-            macroCreationSuccess.append(deletionURL)
+            macroCreationSuccessRes = False
+            logger.warn("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
+            requests.delete(url, auth=(destUsername,destPassword), verify=False)
         else:
-            logger.debug("%s of type macro in app %s, ownership changed with response '%s', new owner %s and sharing level %s" % (name, app, res.text, owner, sharing))
+            #Re-owning it, I've switched URL's again here but it seems to be working so will not change it
+            url = "%s/servicesNS/%s/%s/configs/conf-macros/%s/acl" % (splunk_rest_dest, owner, app, name)
+            payload = { "owner": owner, "sharing" : sharing }
+            logger.info("Attempting to change ownership of macro %s via URL %s to owner %s in app %s with sharing %s" % (name, url, owner, app, sharing))
+            res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+            if (res.status_code != requests.codes.ok):
+                logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s', owner %s sharing level %s" % (name, app, url, res.status_code, res.reason, res.text, owner, sharing))
+                #Hardcoded deletion URL as if this fails it should be this URL...(not parsing the XML here to confirm but this works fine)
+                deletionURL = "%s/servicesNS/%s/%s/configs/conf-macros/%s" % (splunk_rest_dest, owner, app, name)
+                logger.info("%s of type macro in app %s recording deletion URL as user URL due to change ownership failure %s" % (name, app, deletionURL))
+                #Remove the old record
+                if macroCreationSuccessRes:
+                    macroCreationSuccess.pop()
+                macroCreationSuccessRes = False
+                url = url[:-4]
+                logger.warn("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
+                requests.delete(url, auth=(destUsername,destPassword), verify=False)
+            else:
+                logger.debug("%s of type macro in app %s, ownership changed with response '%s', new owner %s and sharing level %s" % (name, app, res.text, owner, sharing))
+            if macroCreationSuccessRes:
+                logger.info("Created %s of type macro in app %s owner is %s sharing level %s" % (name, app, owner, sharing))
 
 ###########################
 #
@@ -656,8 +679,14 @@ def dashboards(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, 
 # Saved Searches
 # 
 ###########################
-def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, ignoreVSID):
     ignoreList = [ "embed.enabled", "triggered_alert_count" ]
+    
+    #View states gracefully fail in the GUI, via the REST API you cannot create the saved search if the view state does not exist
+    #however the same saved search can work fine on an existing search head (even though the viewstate has been deleted)
+    if ignoreVSID:
+        ignoreList.append("vsid")
+    
     return runQueries(app, "/saved/searches", "savedsearches", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
 
 ###########################
@@ -998,8 +1027,8 @@ if args.dashboards:
 
 if args.savedsearches:
     logger.info("Begin savedsearches transfer")
-    (savedsearchCreationSuccess, savedsearchCreationFailure) = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
-    logger.info("End savedsearches transfer")    
+    (savedsearchCreationSuccess, savedsearchCreationFailure) = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute)
+    logger.info("End savedsearches transfer")
 
 if args.workflowActions:
     logger.info("Begin workflowActions transfer")
