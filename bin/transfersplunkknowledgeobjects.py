@@ -65,7 +65,7 @@ parser.add_argument('-noPrivate', help='(optional) disable the migration of user
 parser.add_argument('-noDisabled', help='(optional) disable the migratio of objects with a disabled status in Splunk', action='store_true')
 parser.add_argument('-all', help='(optional) migrate all knowledge objects', action='store_true')
 parser.add_argument('-macros', help='(optional) migrate macro knowledge objects', action='store_true')
-parser.add_argument('-tag', help='(optional) migrate tag knowledge objects', action='store_true')
+parser.add_argument('-tags', help='(optional) migrate tag knowledge objects', action='store_true')
 parser.add_argument('-eventtypes', help='(optional) migrate event types knowledge objects', action='store_true')
 parser.add_argument('-allFieldRelated', help='(optional) migrate all objects under fields', action='store_true')
 parser.add_argument('-calcFields', help='(optional) migrate calc fields knowledge objects', action='store_true')
@@ -86,13 +86,14 @@ parser.add_argument('-times', help='(optional) migrate time labels (conf-times)'
 parser.add_argument('-panels', help='(optional) migrate pre-built dashboard panels', action='store_true')
 parser.add_argument('-debugMode', help='(optional) turn on DEBUG level logging (defaults to INFO)', action='store_true')
 parser.add_argument('-printPasswords', help='(optional) print passwords in the log files (dev only)', action='store_true')
-parser.add_argument('-includeEntities', help='comma separated list of object values to include (double quoted)')
-parser.add_argument('-excludeEntities', help='comma separated list of object values to exclude (double quoted)')
-parser.add_argument('-includeOwner', help='comma separated list of owners objects that should be transferred (double quoted)')
-parser.add_argument('-excludeOwner', help='comma separated list of owners objects that should be transferred (double quoted)')
-parser.add_argument('-privateOnly', help='Only transfer private objects')
+parser.add_argument('-includeEntities', help='(optional) comma separated list of object values to include (double quoted)')
+parser.add_argument('-excludeEntities', help='(optional) comma separated list of object values to exclude (double quoted)')
+parser.add_argument('-includeOwner', help='(optional) comma separated list of owners objects that should be transferred (double quoted)')
+parser.add_argument('-excludeOwner', help='(optional) comma separated list of owners objects that should be transferred (double quoted)')
+parser.add_argument('-privateOnly', help='(optional) Only transfer private objects')
 parser.add_argument('-viewstates', help='(optional) migrate viewstates', action='store_true')
 parser.add_argument('-ignoreViewstatesAttribute', help='(optional) when creating saved searches strip the vsid parameter/attribute before attempting to create the saved search', action='store_true')
+parser.add_argument('-disableAlertsOrReportsOnMigration', help='(optional) when creating alerts/reports, set disabled=1 (or enableSched=0) irrelevant of the previous setting pre-migration', action='store_true')
 
 args = parser.parse_args()
 
@@ -140,7 +141,7 @@ splunk_rest_dest = args.destURL
 #   Due to variations in the REST API there are a few hacks inside this method to handle specific use cases, however the majority are straightforward
 # 
 ###########################
-def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="", destOwner=False, noPrivate=False, noDisabled=False, override=False, includeEntities=None, excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None):
+def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="", destOwner=False, noPrivate=False, noDisabled=False, override=False, includeEntities=None, excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None, disableAlertsOrReportsOnMigration=False):
 
     #Keep a success/Failure list to be returned by this function
     creationSuccess = []
@@ -314,6 +315,14 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                     infoList[sharing].append(info)
                     logger.info("Recording %s info for %s in app context %s with owner %s" % (type, info["name"], app, info["owner"]))
     
+                #If we are migrating but leaving the old app enabled in a previous environment we may not want to leave the report and/or alert enabled
+                if disableAlertsOrReportsOnMigration and type == "savedsearches":
+                    if info.has_key("disabled") and info["disabled"] == "0" and info.has_key("alert_condition"):
+                        logger.info("%s of type %s (alert) in app %s with owner %s was enabled but disableAlertsOrReportOnMigration set, setting to disabled" % (type, info["name"], app, info["owner"]))
+                        info["disabled"] = 1
+                    elif info.has_key("is_scheduled") and not info.has_key("alert_condition") and info["is_scheduled"] == "1":
+                        info["is_scheduled"] = 0
+                        logger.info("%s of type %s (scheduled report) in app %s with owner %s was enabled but disableAlertsOrReportOnMigration set, setting to disabled" % (type, info["name"], app, info["owner"]))
     app = destApp
         
     #Cycle through each one we need to migrate, we do global/app/user as users can duplicate app level objects with the same names
@@ -410,7 +419,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                     logger.error("%s of type %s in app %s with URL %s status code %s reason %s, response '%s', owner of %s" % (name, type, app, url, res.status_code, res.reason, res.text, owner))
                     creationFailure.append(name)
                     if res.status_code == 409:
-                        #Delete the duplicate private object rather than leave it there for no purpose
+                        #Delete the duplicate private object rather than leave it there for no reason
                         url = url[:-4]
                         logger.warn("Deleting the private object as it could not be re-owned %s of type %s in app %s with URL %s" % (name, type, app, url))
                         requests.delete(url, auth=(destUsername,destPassword), verify=False)
@@ -679,7 +688,7 @@ def dashboards(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, 
 # Saved Searches
 # 
 ###########################
-def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, ignoreVSID):
+def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, ignoreVSID, disableAlertsOrReportsOnMigration):
     ignoreList = [ "embed.enabled", "triggered_alert_count" ]
     
     #View states gracefully fail in the GUI, via the REST API you cannot create the saved search if the view state does not exist
@@ -687,7 +696,7 @@ def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntitie
     if ignoreVSID:
         ignoreList.append("vsid")
     
-    return runQueries(app, "/saved/searches", "savedsearches", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/saved/searches", "savedsearches", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, disableAlertsOrReportsOnMigration=disableAlertsOrReportsOnMigration)
 
 ###########################
 #
@@ -895,7 +904,7 @@ panelsFailure = []
 #If the all switch is provided, migrate everything
 if args.all:
     args.macros = True
-    args.tag = True
+    args.tags = True
     args.allFieldRelated = True
     args.lookupDefinition = True
     args.automaticLookup = True
@@ -955,7 +964,7 @@ if args.macros:
     macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
     logger.info("End macros transfer")
 
-if args.tag:
+if args.tags:
     logger.info("Begin tags transfer")
     (tagsSuccess, tagsFailure) = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
     logger.info("End tags transfer")
@@ -1027,7 +1036,7 @@ if args.dashboards:
 
 if args.savedsearches:
     logger.info("Begin savedsearches transfer")
-    (savedsearchCreationSuccess, savedsearchCreationFailure) = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute)
+    (savedsearchCreationSuccess, savedsearchCreationFailure) = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration)
     logger.info("End savedsearches transfer")
 
 if args.workflowActions:
