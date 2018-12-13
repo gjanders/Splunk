@@ -1,6 +1,8 @@
 # Splunk
 Other Splunk scripts which do not fit into the SplunkAdmins application
 
+Limited documentation is available for the transfer splunk knowledge objects script below
+
 ## Purpose?
 Transfer Splunk knowledge objects from 1 search head to another without going through the deployer (except for lookup files, they cannot be created via REST API as such) 
 
@@ -37,7 +39,7 @@ Provides the full list, a summary of the main options are below
 ### Controlling which knowledge objects are transferred
 ```-all``` (optional) migrate all knowledge objects  
 ```-macros``` (optional) migrate macro knowledge objects  
-```-tag``` (optional) migrate tag knowledge objects  
+```-tags``` (optional) migrate tag knowledge objects  
 ```-eventtypes``` (optional) migrate event types knowledge objects  
 ```-allFieldRelated``` (optional) migrate all objects under fields  
 ```-calcFields``` (optional) migrate calc fields knowledge objects  
@@ -53,6 +55,10 @@ Provides the full list, a summary of the main options are below
 ```-savedsearches``` (optional) migrate saved search objects (this includes reports/alerts)  
 ```-navMenu``` (optional) migrate navigation menus  
 ```-navMenuWithDefaultOverride``` (optional) override the default nav menu in the destination app  
+```-viewstates``` (optional) migrate viewstates  
+```-times``` (optional) migrate time labels (conf-times)  
+```-collections``` (optional) migrate collections (kvstore collections)  
+```-panels``` (optional) migrate pre-built dashboard panels  
 
 ### Filtering
 ```-noPrivate``` (optional) disable the migration of user level / private objects  
@@ -66,3 +72,7 @@ Provides the full list, a summary of the main options are below
 ### Logging options
 ```-debugMode``` (optional) turn on DEBUG level logging (defaults to INFO)  
 ```-printPasswords``` (optional) print passwords in the log files (dev only)  
+
+### Other ###
+```-ignoreViewstatesAttribute``` (optional) when creating saved searches strip the vsid parameter/attribute before attempting to create the saved search  
+```-disableAlertsOrReportsOnMigration``` (optional) when creating alerts/reports, set disabled=1 (or enableSched=0) irrelevant of the previous setting pre-migration
