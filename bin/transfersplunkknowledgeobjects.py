@@ -38,7 +38,8 @@ logging_config = dict(
               'filename' : '/tmp/transfer_knowledgeobj.log',
               'formatter': 'f',
               'maxBytes' :  2097152,
-              'level': logging.DEBUG}
+              'level': logging.DEBUG,
+              'backupCount': 5 }
         },        
     root = {
         'handlers': ['h','file'],
