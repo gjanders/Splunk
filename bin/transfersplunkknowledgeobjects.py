@@ -38,7 +38,8 @@ logging_config = dict(
               'filename' : '/tmp/transfer_knowledgeobj.log',
               'formatter': 'f',
               'maxBytes' :  2097152,
-              'level': logging.DEBUG}
+              'level': logging.DEBUG,
+              'backupCount': 5 }
         },        
     root = {
         'handlers': ['h','file'],
@@ -585,15 +586,15 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
     #but we create everything at user level first then re-own it so global/app must happen first
     if macros.has_key("global"):
         logger.debug("Now running macroCreation with knowledge objects of type macro with global level sharing in app %s" % (app))
-        macroCreation(macros["global"], destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure)
+        macroCreation(macros["global"], destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure, override)
 
     if macros.has_key("app"):
         logger.debug("Now running macroCreation with knowledge objects of type macro with app level sharing in app %s" % (app))
-        macroCreation(macros["app"], destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure)
+        macroCreation(macros["app"], destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure, override)
         
     if macros.has_key("user"):
         logger.debug("Now running macroCreation with knowledge objects of type macro with user (private) level sharing in app %s" % (app))
-        macroCreation(macros["user"], destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure)
+        macroCreation(macros["user"], destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure, override)
 
     return macroCreationSuccess
 
@@ -604,7 +605,7 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
 # 
 ###########################
 
-def macroCreation(macros, destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure):
+def macroCreation(macros, destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure, override):
     for aMacro in macros:
         sharing = aMacro["sharing"]
         name = aMacro["name"]
@@ -1008,97 +1009,97 @@ logger.info("transfer splunk knowledge objects run with arguments %s" % (cleanAr
 ##########################
 if args.macros:
     logger.info("Begin macros transfer")
-    macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End macros transfer")
 
 if args.tags:
     logger.info("Begin tags transfer")
-    (tagsSuccess, tagsFailure) = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (tagsSuccess, tagsFailure) = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End tags transfer")
 
 if args.eventtypes:
     logger.info("Begin eventtypes transfer")
-    (eventtypesSuccess, eventtypesFailure) = eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (eventtypesSuccess, eventtypesFailure) = eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End eventtypes transfer")
 
 if args.calcFields:
     logger.info("Begin calcFields transfer")
-    (calcfieldsCreationSuccess, calcfieldsCreationFailure) = calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (calcfieldsCreationSuccess, calcfieldsCreationFailure) = calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End calcFields transfer")
 
 if args.fieldAlias:
     logger.info("Begin fieldAlias transfer")
-    (fieldaliasesCreationSuccess, fieldaliasesCreationFailure) = fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (fieldaliasesCreationSuccess, fieldaliasesCreationFailure) = fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End fieldAlias transfer")
 
 if args.fieldTransforms:
     logger.info("Begin fieldTransforms transfer")    
-    (fieldTransformationsSuccess, fieldTransformationsFailure) = fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (fieldTransformationsSuccess, fieldTransformationsFailure) = fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End fieldTransforms transfer")
 
 if args.fieldExtraction:
     logger.info("Begin fieldExtraction transfer")    
-    (fieldextractionsCreationSuccess, fieldextractionsCreationFailure) = fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (fieldextractionsCreationSuccess, fieldextractionsCreationFailure) = fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End fieldExtraction transfer")
 
 if args.collections:
     logger.info("Begin collections (kvstore definition) transfer")
-    (collectionsSuccess, collectionsFailure) = collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (collectionsSuccess, collectionsFailure) = collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End collections (kvstore definition) transfer")
 
 if args.lookupDefinition:
     logger.info("Begin lookupDefinitions transfer")
-    (lookupDefinitionsSuccess, lookupDefinitionsFailure) = lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (lookupDefinitionsSuccess, lookupDefinitionsFailure) = lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End lookupDefinitions transfer")
 
 if args.automaticLookup:
     logger.info("Begin automaticLookup transfer")
-    (automaticLookupsSuccess, automaticLookupsFailure) = automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (automaticLookupsSuccess, automaticLookupsFailure) = automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End automaticLookup transfer")
 
 if args.times:
     logger.info("Begin times (conf-times) transfer")
-    (timesSuccess, timesFailure) = times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (timesSuccess, timesFailure) = times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End times (conf-times) transfer")
 
 if args.viewstates:
     logger.info("Begin viewstates transfer")
-    (viewstatesSuccess, viewstatesFailure) = viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (viewstatesSuccess, viewstatesFailure) = viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End viewstates transfer")
     
 if args.panels:
     logger.info("Begin pre-built dashboard panels transfer")
-    (panelsSuccess, panelsFailure) = panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (panelsSuccess, panelsFailure) = panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End pre-built dashboard panels transfer")
     
 if args.datamodels:
     logger.info("Begin datamodels transfer")
-    (datamodelSuccess, datamodelFailure) = datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (datamodelSuccess, datamodelFailure) = datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End datamodels transfer")
 
 if args.dashboards:
     logger.info("Begin dashboards transfer")
-    (dashboardCreationSuccess, dashboardCreationFailure) = dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (dashboardCreationSuccess, dashboardCreationFailure) = dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End dashboards transfer")    
 
 if args.savedsearches:
     logger.info("Begin savedsearches transfer")
-    (savedsearchCreationSuccess, savedsearchCreationFailure) = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.override)
+    (savedsearchCreationSuccess, savedsearchCreationFailure) = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.overrideMode)
     logger.info("End savedsearches transfer")
 
 if args.workflowActions:
     logger.info("Begin workflowActions transfer")
-    (workflowActionsSuccess, workflowActionsFailure) = workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (workflowActionsSuccess, workflowActionsFailure) = workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End workflowActions transfer")    
 
 if args.sourcetypeRenaming:
     logger.info("Begin sourcetypeRenaming transfer")
-    (sourcetypeRenamingSuccess, sourcetypeRenamingFailure) = sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (sourcetypeRenamingSuccess, sourcetypeRenamingFailure) = sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End sourcetypeRenaming transfer")        
 
 if args.navMenu:
     logger.info("Begin navMenu transfer")
-    (navMenuSuccess, navMenuFailure) = navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.override)
+    (navMenuSuccess, navMenuFailure) = navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode)
     logger.info("End navMenu transfer")        
 
 ###########################
