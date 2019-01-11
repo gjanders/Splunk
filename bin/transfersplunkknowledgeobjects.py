@@ -142,7 +142,7 @@ splunk_rest_dest = args.destURL
 #   Due to variations in the REST API there are a few hacks inside this method to handle specific use cases, however the majority are straightforward
 # 
 ###########################
-def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="", destOwner=False, noPrivate=False, noDisabled=False, override=False, includeEntities=None, excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None, disableAlertsOrReportsOnMigration=False, override=None):
+def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="", destOwner=False, noPrivate=False, noDisabled=False, override=None, includeEntities=None, excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None, disableAlertsOrReportsOnMigration=False):
 
     #Keep a success/Failure list to be returned by this function
     creationSuccess = []
@@ -361,7 +361,8 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
         
         payload = anInfo
         name = anInfo["name"]
-
+        
+        url = "%s/servicesNS/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint)
         objURL = "%s/%s?output_mode=json" % (url, name)
         #Verify=false is hardcoded to workaround local SSL issues
         res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)
@@ -802,7 +803,7 @@ def eventtypes(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, 
 def navMenu(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override):
     ignoreList = [ "disabled", "eai:appName", "eai:userName", "eai:digest", "rootNode" ]
     #If override we override the default nav menu of the destination app
-    return runQueries(app, "/data/ui/nav", "navMenu", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, override=override, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override)
+    return runQueries(app, "/data/ui/nav", "navMenu", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, override=override, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
 
 ###########################
 #
