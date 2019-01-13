@@ -286,6 +286,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
             #If we have not set the keep flag to False
             if keep:
                 if nameOverride != "":
+                    info["origName"] = info["name"]
                     info["name"] = info[nameOverride]
                     #TODO hack to handle field extractions where they have an extra piece of info in the name
                     #as in the name is prepended with EXTRACT-, REPORT- or LOOKUP-, we need to remove this before creating
@@ -364,7 +365,12 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
         name = anInfo["name"]
         
         url = "%s/servicesNS/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint)
-        objURL = "%s/%s?output_mode=json" % (url, name)
+        if 'origName' in anInfo:
+            origName = anInfo['origName']
+            logging.debug("%s of type %s overriding name from %s to %s due to origName existing in config dictionary" % (name, type, name, origName))
+            objURL = "%s/%s?output_mode=json" % (url, origName)
+        else:
+            objURL = "%s/%s?output_mode=json" % (url, name)
         logging.debug("%s of type %s checking on URL %s to see if it exists" % (name, type, objURL))
         #Verify=false is hardcoded to workaround local SSL issues
         res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)
