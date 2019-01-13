@@ -365,6 +365,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
         name = anInfo["name"]
         
         url = "%s/servicesNS/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint)
+        objURL = None
         if 'origName' in anInfo:
             origName = anInfo['origName']
             logging.debug("%s of type %s overriding name from %s to %s due to origName existing in config dictionary" % (name, type, name, origName))
