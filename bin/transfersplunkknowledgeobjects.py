@@ -370,6 +370,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             origName = anInfo['origName']
             logging.debug("%s of type %s overriding name from %s to %s due to origName existing in config dictionary" % (name, type, name, origName))
             objURL = "%s/%s?output_mode=json" % (url, origName)
+            del anInfo['origName']
         else:
             objURL = "%s/%s?output_mode=json" % (url, name)
         logging.debug("%s of type %s checking on URL %s to see if it exists" % (name, type, objURL))
@@ -470,6 +471,13 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             #object exists already
             if override:
                 url = url + "/" + name
+                
+                #Cannot post type/stanza when updating field extractions or a few other object types, but require them for creation?!
+                if 'type' in payload:
+                    del payload['type']
+                if 'stanza' in payload:
+                    del payload['stanza']
+                
                 #Remove the name from the payload
                 del payload['name']
                 logger.debug("Attempting to update %s with name %s on URL %s with payload '%s' in app %s" % (type, name, url, payload, app))
