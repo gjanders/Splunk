@@ -6,6 +6,7 @@ import urllib
 import argparse
 import json
 import copy
+from datetime import datetime,timedelta
 
 ###########################
 #
@@ -37,7 +38,7 @@ logging_config = dict(
         'file': {'class' : 'logging.handlers.RotatingFileHandler',
               'filename' : '/tmp/transfer_knowledgeobj.log',
               'formatter': 'f',
-              'maxBytes' :  2097152,
+              'maxBytes' :  10485760,
               'level': logging.DEBUG,
               'backupCount': 5 }
         },        
@@ -81,7 +82,8 @@ parser.add_argument('-datamodels', help='(optional) migrate data model knowledge
 parser.add_argument('-dashboards', help='(optional) migrate dashboards (user interface -> views)', action='store_true')
 parser.add_argument('-savedsearches', help='(optional) migrate saved search objects (this includes reports/alerts)', action='store_true')
 parser.add_argument('-navMenu', help='(optional) migrate navigation menus', action='store_true')
-parser.add_argument('-navMenuWithDefaultOverride', help='(optional) migrate navigation menus *and* overwrite the default menu in the dest app', action='store_true')
+parser.add_argument('-overrideMode', help='(optional) if the remote knowledge object exists, overwrite it with the migrated version only if the migrated version does not have a newer updated time. Skip otherwise', action='store_true')
+parser.add_argument('-overrideAlwaysMode', help='(optional) if the remote knowledge object exists, overwrite it with the migrated version (by default this will not override)', action='store_true')
 parser.add_argument('-collections', help='(optional) migrate collections (kvstore collections)', action='store_true')
 parser.add_argument('-times', help='(optional) migrate time labels (conf-times)', action='store_true')
 parser.add_argument('-panels', help='(optional) migrate pre-built dashboard panels', action='store_true')
@@ -133,6 +135,27 @@ splunk_rest = args.srcURL
 #Destination server
 splunk_rest_dest = args.destURL
 
+#As per https://stackoverflow.com/questions/1101508/how-to-parse-dates-with-0400-timezone-string-in-python/23122493#23122493
+def determineTime(timestampStr, name, app, type):
+    logger.debug("Attempting to convert %s to timestamp for %s name, in app %s for type %s" % (timestampStr, name, app, type))
+    ret = datetime.strptime(timestampStr[0:19],  "%Y-%m-%dT%H:%M:%S")
+    if timestampStr[18]=='+':
+        ret-=timedelta(hours=int(z[20:22]),minutes=int(z[24:]))
+    elif timestampStr[19]=='-':
+        ret+=timedelta(hours=int(z[20:22]),minutes=int(z[24:]))
+    logger.debug("Converted time is %s to timestamp for %s name, in app %s for type %s" % (ret, name, app, type))
+    return ret
+
+def appendToResults(resultsDict, name, result):
+    if not name in resultsDict:
+        resultsDict[name] = []
+    resultsDict[name].append(result)
+
+def popLastResult(resultsDict, name):
+    if name in resultsDict:
+        if len(resultsDict[name]) > 0:
+            resultsDict[name].pop()
+
 ###########################
 #
 # runQueries (generic version)
@@ -142,11 +165,10 @@ splunk_rest_dest = args.destURL
 #   Due to variations in the REST API there are a few hacks inside this method to handle specific use cases, however the majority are straightforward
 # 
 ###########################
-def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="", destOwner=False, noPrivate=False, noDisabled=False, override=False, includeEntities=None, excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None, disableAlertsOrReportsOnMigration=False):
+def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="", destOwner=False, noPrivate=False, noDisabled=False, override=None, includeEntities=None, excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None, disableAlertsOrReportsOnMigration=False, overrideAlways=None):
 
     #Keep a success/Failure list to be returned by this function
-    creationSuccess = []
-    creationFailure = []
+    actionResults = {}
     
     #Use count=-1 to ensure we see all the objects
     url = splunk_rest + "/servicesNS/-/" + app + endpoint + "?count=-1"
@@ -185,6 +207,17 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                             logger.debug("%s of type %s in excludeEntities list in app %s" % (info["name"], type, app))
                             keep = False
                             break
+                            
+                    #Backup the original name if we override it, override works fine for creation
+                    #but updates require the original name
+                    if 'name' in aliasAttributes.values():
+                        info["origName"] = title
+                    
+                elif innerChild.tag.endswith("updated"):
+                    updatedStr = innerChild.text
+                    updated = determineTime(updatedStr, info["name"], app, type)
+                    info['updated'] = updated
+                    logger.debug("name %s, type %s in app %s was updated on %s" % (title, type, app, updated))
                 #Content apepars to be where 90% of the data we want is located
                 elif innerChild.tag.endswith("content"):
                     for theAttribute in innerChild[0]:
@@ -208,7 +241,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                                     logger.debug("%s of type %s in app context of %s belongs to %s" % (info["name"], type, app, foundApp))
                                     #We can see globally shared objects in our app context, it does not mean we should migrate them as it's not ours...
                                     if app != foundApp:
-                                        logging.debug("%s of type %s found in app context of %s belongs to app context %s, excluding from app %s" % (info["name"], type, app, foundApp, app))
+                                        logger.debug("%s of type %s found in app context of %s belongs to app context %s, excluding from app %s" % (info["name"], type, app, foundApp, app))
                                         keep = False
                                         break
                                 #owner is seen as a nicer alternative to the author variable
@@ -285,6 +318,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
             #If we have not set the keep flag to False
             if keep:
                 if nameOverride != "":
+                    info["origName"] = info["name"]
                     info["name"] = info[nameOverride]
                     #TODO hack to handle field extractions where they have an extra piece of info in the name
                     #as in the name is prepended with EXTRACT-, REPORT- or LOOKUP-, we need to remove this before creating
@@ -298,7 +332,11 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                     elif type=="automatic lookup" and info["name"].find("LOOKUP-") == 0:
                         logger.debug("Overriding name of %s of type %s in app context %s with owner %s to new name of %s" % (info["name"], type, app, info["owner"], info["name"][7:]))
                         info["name"] = info["name"][7:]
-                
+                    elif type=="fieldaliases":
+                        newName = info["name"]
+                        newName = newName[newName.find("FIELDALIAS-")+11:]
+                        logger.debug("Overriding name of %s of type %s in app context %s with owner %s to new name of %s" % (info["name"], type, app, info["owner"], newName))
+                        info["name"] = newName
                 #Some attributes are not used to create a new version so we remove them...(they may have been used above first so we kept them until now)
                 for attribName in fieldIgnoreList:
                     if info.has_key(attribName):
@@ -330,17 +368,17 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
     #but we create everything at user level first then re-own it so global/app must happen first
     if infoList.has_key("global"):
         logger.debug("Now running runQueriesPerList with knowledge objects of type %s with global level sharing in app %s" % (type, app))
-        runQueriesPerList(infoList["global"], destOwner, type, override, app, splunk_rest_dest, endpoint, creationSuccess, creationFailure)
+        runQueriesPerList(infoList["global"], destOwner, type, override, app, splunk_rest_dest, endpoint, actionResults, overrideAlways)
 
     if infoList.has_key("app"):
         logger.debug("Now running runQueriesPerList with knowledge objects of type %s with app level sharing in app %s" % (type, app))
-        runQueriesPerList(infoList["app"], destOwner, type, override, app, splunk_rest_dest, endpoint, creationSuccess, creationFailure)
+        runQueriesPerList(infoList["app"], destOwner, type, override, app, splunk_rest_dest, endpoint, actionResults, overrideAlways)
         
     if infoList.has_key("user"):
         logger.debug("Now running runQueriesPerList with knowledge objects of type %s with user (private) level sharing in app %s" % (type, app))
-        runQueriesPerList(infoList["user"], destOwner, type, override, app, splunk_rest_dest, endpoint, creationSuccess, creationFailure)
+        runQueriesPerList(infoList["user"], destOwner, type, override, app, splunk_rest_dest, endpoint, actionResults, overrideAlways)
         
-    return creationSuccess, creationFailure
+    return actionResults
     
 ###########################
 #
@@ -348,7 +386,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
 #   Runs the required queries to create the knowledge object and then re-owns them to the correct user
 # 
 ###########################
-def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest, endpoint, creationSuccess, creationFailure):
+def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest, endpoint, actionResults, overrideAlways):
     for anInfo in infoList:
         sharing = anInfo["sharing"]
         owner = anInfo["owner"]
@@ -361,29 +399,71 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
         
         payload = anInfo
         name = anInfo["name"]
-
-        #Doing this update the default nav menu to match the app been transferred
-        if type=="navMenu" and name == "default" and override:
-            url = "%s/servicesNS/nobody/%s/%s/default" % (splunk_rest_dest, app, endpoint)
-            logger.info("Attempting to update %s with name %s on URL %s in app %s" % (type, name, url, app))
-            del anInfo["name"]
+        curUpdated = anInfo["updated"]
+        del anInfo["updated"]
+        
+        url = "%s/servicesNS/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint)
+        objURL = None
+        origName = None
+        if 'origName' in anInfo:
+            origName = anInfo['origName']
+            del anInfo['origName']
+            logger.debug("%s of type %s overriding name from %s to %s due to origName existing in config dictionary" % (name, type, name, origName))
+            objURL = "%s/servicesNS/-/%s/%s/%s?output_mode=json" % (splunk_rest_dest, app, endpoint, origName)
         else:
-            url = "%s/servicesNS/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint)
-            logger.info("Attempting to create %s with name %s on URL %s in app %s" % (type, name, url, app))
-
+            #datamodels do not allow /-/ (or private / user level sharing, only app level)
+            if type == "datamodels":
+                objURL = "%s/servicesNS/%s/%s/%s/%s?output_mode=json" % (splunk_rest_dest, owner, app, endpoint, name)
+            else:
+                objURL = "%s/servicesNS/-/%s/%s/%s?output_mode=json" % (splunk_rest_dest, app, endpoint, name)
+        logger.debug("%s of type %s checking on URL %s to see if it exists" % (name, type, objURL))
+        #Verify=false is hardcoded to workaround local SSL issues
+        res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)
+        objExists = False
+        updated = None
+        
+        #If we get 404 it definitely does not exist
+        if (res.status_code == 404):
+            logger.debug("URL %s is throwing a 404, assuming new object creation" % (objURL))
+        elif (res.status_code != requests.codes.ok):
+            logger.error("URL %s in app %s status code %s reason %s, response: '%s'" % (objURL, app, res.status_code, res.reason, res.text))
+        else:
+            #However the fact that we did not get a 404 does not mean it exists in the context we expect it to, perhaps it's global and from another app context?
+            #or perhaps it's app level but we're restoring a private object...
+            logger.debug("Attempting to JSON loads on %s" % (res.text))
+            resDict = json.loads(res.text)
+            for entry in resDict['entry']:
+                sharingLevel = entry['acl']['sharing']
+                appContext = entry['acl']['app']
+                updatedStr = entry['updated']
+                updated = determineTime(updatedStr, name, app, type)
+                if appContext == app and (sharing == 'app' or sharing=='global') and (sharingLevel == 'app' or sharingLevel == 'global'):
+                    objExists = True
+                    logger.debug("name %s of type %s in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, type, app, objURL, sharingLevel, updated))
+                elif appContext == app and sharing == 'user' and sharingLevel == "user":
+                    objExists = True
+                    logger.debug("name %s of type %s in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, type, app, objURL, sharingLevel, updated))
+                elif appContext == app and sharingLevel == "user" and (sharing == "app" or sharing == "global"):
+                    logger.info("name %s of type %s in app context %s found to exist on url %s with sharing of %s, updated time of %s, this is a problem because we cannot create a private object in this context, will attempt to create an app level object" % (name, type, app, objURL, sharingLevel, updated))
+                    url = "%s/servicesNS/nobody/%s/%s" % (splunk_rest_dest, app, endpoint)
+                    logger.debug("name %s of type %s in app context %s new url is %s" % (name, type, app, url))
+                else:
+                    logger.debug("name %s of type %s in app context %s, found the object with this name in sharingLevel %s and appContext %s, updated time of %s" % (name, type, app, sharingLevel, appContext, updated))
         #Hack to handle the times (conf-times) not including required attributes for creation in existing entries
         #not sure how this happens but it fails to create in 7.0.5 but works fine in 7.2.x, fixing for the older versions
         if type=="times (conf-times)" and not payload.has_key("is_sub_menu"):
             payload["is_sub_menu"] = "0"
         
-        deletionURL = ""
-        logger.debug("Attempting to create %s with name %s on URL %s with payload '%s' in app %s" % (type, name, url, payload, app))
-        res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
-        if (res.status_code != requests.codes.ok and res.status_code != 201):
-            logger.error("%s of type %s with URL %s status code %s reason %s, response '%s', in app %s, owner %s" % (name, type, url, res.status_code, res.reason, res.text, app, owner))
-            creationFailure.append(name)
-        else:
-            logger.debug("%s of type %s in app %s with URL %s result is: '%s' owner of %s" % (name, type, app, url, res.text, owner))
+        deletionURL = None
+        if objExists == False:
+            logger.debug("Attempting to create %s with name %s on URL %s with payload '%s' in app %s" % (type, name, url, payload, app))
+            res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+            if (res.status_code != requests.codes.ok and res.status_code != 201):
+                logger.error("%s of type %s with URL %s status code %s reason %s, response '%s', in app %s, owner %s" % (name, type, url, res.status_code, res.reason, res.text, app, owner))               
+                appendToResults(actionResults, 'creationFailure', name)
+                continue
+            else:
+                logger.debug("%s of type %s in app %s with URL %s result is: '%s' owner of %s" % (name, type, app, url, res.text, owner))
             
             #Parse the result to find the new URL to use
             root = ET.fromstring(res.text)
@@ -396,10 +476,10 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                     #Down to each entry level
                     for innerChild in child:
                         #print innerChild.tag
-                        if innerChild.tag.endswith("link") and innerChild.attrib["rel"]=="remove":
+                        if innerChild.tag.endswith("link") and innerChild.attrib["rel"]=="list":
                             deletionURL = "%s/%s" % (splunk_rest_dest, innerChild.attrib["href"])
                             logger.debug("%s of type %s in app %s recording deletion URL as %s" % (name, type, app, deletionURL))
-                            creationSuccess.append(deletionURL)
+                            appendToResults(actionResults, 'creationSuccess', deletionURL)
                             creationSuccessRes = True
                 elif child.tag.endswith("messages"):
                     for innerChild in child:
@@ -407,61 +487,112 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                             logger.warn("%s of type %s in app %s had a warn/error message of '%s' owner of %s" % (name, type, app, innerChild.text, owner))
                             #Sometimes the object appears to be create but is unusable which is annoying, at least provide the warning to the logs
                             #and record it in the failure list for investigation
-                            creationFailure.append(name)
-            if not override:
-                #Re-owning it to the previous owner
-                url = "%s/acl" % (deletionURL)
-                payload = { "owner": owner, "sharing" : sharing }
-                logger.info("Attempting to change ownership of %s with name %s via URL %s to owner %s in app %s with sharing %s" % (type, name, url, owner, app, sharing))
-                res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+                            appendToResults(actionResults, 'creationFailure', name)
+            if not deletionURL:
+                logger.warn("%s of type %s in app %s did not appear to create correctly, will not attempt to change the ACL of this item" % (name, type, app))
+                continue
+            #Re-owning it to the previous owner
+            url = "%s/acl" % (deletionURL)
+            payload = { "owner": owner, "sharing" : sharing }
+            logger.info("Attempting to change ownership of %s with name %s via URL %s to owner %s in app %s with sharing %s" % (type, name, url, owner, app, sharing))
+            res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+            
+            #If re-own fails consider this a failure that requires investigation
+            if (res.status_code != requests.codes.ok):
+                logger.error("%s of type %s in app %s with URL %s status code %s reason %s, response '%s', owner of %s" % (name, type, app, url, res.status_code, res.reason, res.text, owner))
+                appendToResults(actionResults, 'creationFailure', name)
+                if res.status_code == 409:
+                    if type == "eventtypes":
+                        logger.warn("Received a 409 while changing the ACL permissions of %s of type %s in app %s with URL %s, however eventtypes throw this error and work anyway. Ignoring!" % (name, type, app, url))
+                        continue
+                    #Delete the duplicate private object rather than leave it there for no reason
+                    url = url[:-4]
+                    logger.warn("Deleting the private object as it could not be re-owned %s of type %s in app %s with URL %s" % (name, type, app, url))
+                    requests.delete(url, auth=(destUsername,destPassword), verify=False)
+                    #If we previously recorded success, remove that entry
+                    if creationSuccessRes:
+                        popLastResult(actionResults, 'creationSuccess')
+                continue
+            else:
+                logger.debug("%s of type %s in app %s, ownership changed with response: %s, will update deletion URL, owner %s, sharing level %s" % (name, type, app, res.text, owner, sharing))
                 
-                #If re-own fails consider this a failure that requires investigation
-                if (res.status_code != requests.codes.ok):
-                    logger.error("%s of type %s in app %s with URL %s status code %s reason %s, response '%s', owner of %s" % (name, type, app, url, res.status_code, res.reason, res.text, owner))
-                    creationFailure.append(name)
-                    if res.status_code == 409:
-                        #Delete the duplicate private object rather than leave it there for no reason
-                        url = url[:-4]
-                        logger.warn("Deleting the private object as it could not be re-owned %s of type %s in app %s with URL %s" % (name, type, app, url))
-                        requests.delete(url, auth=(destUsername,destPassword), verify=False)
-                        
-                        #If we previously recorded success, remove that entry
-                        if creationSuccessRes:
-                            creationSuccessRes = False
-                            creationSuccess.pop()
-                else:
-                    logger.debug("%s of type %s in app %s, ownership changed with response: %s, will update deletion URL, owner %s, sharing level %s" % (name, type, app, res.text, owner, sharing))
-                    
-                    #Parse the return response
-                    root = ET.fromstring(res.text)
-                    infoList = []
-                    for child in root:
-                        #Working per entry in the results
-                        if child.tag.endswith("entry"):
-                            #Down to each entry level
-                            for innerChild in child:
-                                if innerChild.tag.endswith("link") and innerChild.attrib["rel"]=="remove":
-                                    deletionURL = "%s/%s" % (splunk_rest_dest, innerChild.attrib["href"])
-                                    logger.debug("%s of type %s in app %s recording new deletion URL as %s , owner is %s and sharing level %s" % (name, type, app, deletionURL, owner, sharing))
-                                    #Remove our last recorded URL
-                                    if len(creationSuccess) > 1:
-                                        creationSuccess.pop()
-                                    creationSuccess.append(deletionURL)
+                #Parse the return response
+                root = ET.fromstring(res.text)
+                infoList = []
+                for child in root:
+                    #Working per entry in the results
+                    if child.tag.endswith("entry"):
+                        #Down to each entry level
+                        for innerChild in child:
+                            if innerChild.tag.endswith("link") and innerChild.attrib["rel"]=="list":
+                                deletionURL = "%s/%s" % (splunk_rest_dest, innerChild.attrib["href"])
+                                logger.debug("%s of type %s in app %s recording new deletion URL as %s , owner is %s and sharing level %s" % (name, type, app, deletionURL, owner, sharing))
+                                #Remove our last recorded URL
+                                logger.info("action results is %s" % (actionResults))
+                                popLastResult(actionResults, 'creationSuccess')
+                                appendToResults(actionResults, 'creationSuccess', deletionURL)
+                                logger.info("action results is %s" % (actionResults))
             if creationSuccessRes:
                 logger.info("Created %s of type %s in app %s owner is %s sharing level %s" % (name, type, app, owner, sharing))
+            else:
+                logger.warn("Atempted to create %s of type %s in app %s owner is %s sharing level %s but failed" % (name, type, app, owner, sharing))
+        else:
+            #object exists already
+            if override or overrideAlways:
+                #If the override flag is on and the curUpdated attribute is older than the remote updated attribute
+                #then do not continue with the override
+                #if we have overrideAlways we blindly overwrite
+                if override and curUpdated < updated:
+                    logger.info("%s of type %s in app %s with URL %s, owner %s, source object says time of %s, destination object says time of %s, skipping this entry" % (name, type, app, objURL, owner, curUpdated, updated))
+                    appendToResults(actionResults, 'creationSkip', objURL)
+                    continue
+                else:
+                    logger.info("%s of type %s in app %s with URL %s, owner %s, source object says time of %s, destination object says time of %s, will update this entry" % (name, type, app, objURL, owner, curUpdated, updated))
+                url = objURL
+                
+                #If we're user level we want to update using the user endpoint
+                #If it's app/global we update using the nobody to ensure we're updating the app level object
+                urlName = None
+                if origName:
+                    urlName = origName
+                else:
+                    urlName = name
+                
+                if sharing == "user":
+                    url = "%s/servicesNS/%s/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint, urlName)
+                else:
+                    url = "%s/servicesNS/nobody/%s/%s/%s" % (splunk_rest_dest, app, endpoint, urlName)
+                
+                #Cannot post type/stanza when updating field extractions or a few other object types, but require them for creation?!
+                if 'type' in payload:
+                    del payload['type']
+                if 'stanza' in payload:
+                    del payload['stanza']
+                
+                #Remove the name from the payload
+                del payload['name']
+                logger.debug("Attempting to update %s with name %s on URL %s with payload '%s' in app %s" % (type, name, url, payload, app))
+                res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+                if (res.status_code != requests.codes.ok and res.status_code != 201):
+                    logger.error("%s of type %s with URL %s status code %s reason %s, response '%s', in app %s, owner %s" % (name, type, url, res.status_code, res.reason, res.text, app, owner))
+                    appendToResults(actionResults, 'updateFailure', name)
+                else:
+                    logger.debug("Post-update of %s of type %s in app %s with URL %s result is: '%s' owner of %s" % (name, type, app, url, res.text, owner))
+                    appendToResults(actionResults, 'updateSuccess', name)
+            else:
+                appendToResults(actionResults, 'creationSkip', objURL)
+                logger.info("%s of type %s in app %s owner of %s, object already exists and override is not set, nothing to do here" % (name, type, app, owner))
 
 ###########################
 #
 # macros
 # 
 ###########################
-macroCreationSuccess = []
-macroCreationFailure = []
-
 #macro use cases are slightly different to everything else on the REST API
 #enough that this code has not been integrated into the runQuery() function
-def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     macros = {}
+    macroResults = {}
     #servicesNS/-/-/properties/macros doesn't show private macros so using /configs/conf-macros to find all the macros
     #again with count=-1 to find all the available macros
     url = splunk_rest + "/servicesNS/-/" + app + "/configs/conf-macros?count=-1"
@@ -496,6 +627,11 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
                             logger.debug("%s of type macro in excludeEntities list in app %s" % (macroInfo["name"], app))
                             keep = False
                             break
+                elif innerChild.tag.endswith("updated"):
+                    updatedStr = innerChild.text
+                    updated = determineTime(updatedStr, macroInfo["name"], app, "macro")
+                    macroInfo['updated'] = updated
+                    logger.debug("name %s, of type macro in app %s was updated on %s" % (title, app, updated))
                 #Content apepars to be where 90% of the data we want is located
                 elif innerChild.tag.endswith("content"):
                     for theAttribute in innerChild[0]:
@@ -521,7 +657,7 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
                                     foundApp = theList.text
                                     #We can see globally shared objects in our app context, it does not mean we should migrate them as it's not ours...
                                     if app != foundApp:
-                                        logging.debug("%s of type macro found in app context of %s, belongs to app context %s, excluding it" % (macroInfo["name"], app, foundApp))
+                                        logger.debug("%s of type macro found in app context of %s, belongs to app context %s, excluding it" % (macroInfo["name"], app, foundApp))
                                         keep = False
                                         break
                                 #owner is used as a nicer alternative to the author
@@ -568,17 +704,17 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
     #but we create everything at user level first then re-own it so global/app must happen first
     if macros.has_key("global"):
         logger.debug("Now running macroCreation with knowledge objects of type macro with global level sharing in app %s" % (app))
-        macroCreation(macros["global"], destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure)
+        macroCreation(macros["global"], destOwner, app, splunk_rest_dest, macroResults, override, overrideAlways)
 
     if macros.has_key("app"):
         logger.debug("Now running macroCreation with knowledge objects of type macro with app level sharing in app %s" % (app))
-        macroCreation(macros["app"], destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure)
+        macroCreation(macros["app"], destOwner, app, splunk_rest_dest, macroResults, override, overrideAlways)
         
     if macros.has_key("user"):
         logger.debug("Now running macroCreation with knowledge objects of type macro with user (private) level sharing in app %s" % (app))
-        macroCreation(macros["user"], destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure)
+        macroCreation(macros["user"], destOwner, app, splunk_rest_dest, macroResults, override, overrideAlways)
 
-    return macroCreationSuccess
+    return macroResults
 
 ###########################
 #
@@ -587,42 +723,95 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
 # 
 ###########################
 
-def macroCreation(macros, destOwner, app, splunk_rest_dest, macroCreationSuccess, macroCreationFailure):
+def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, override, overrideAlways):
     for aMacro in macros:
         sharing = aMacro["sharing"]
         name = aMacro["name"]
         owner = aMacro["owner"]
+        curUpdated = aMacro["updated"]
+        del aMacro["updated"]
         
         if destOwner:
             owner = destOwner
             
         url = "%s/servicesNS/%s/%s/properties/macros" % (splunk_rest_dest, owner, app)
-        logger.info("Attempting to create macro %s on URL with name %s in app %s" % (name, url, app))
+
+        objURL = "%s/servicesNS/-/%s/configs/conf-macros/%s?output_mode=json" % (splunk_rest_dest, app, name)
+        #Verify=false is hardcoded to workaround local SSL issues
+        res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)
+        logger.debug("%s of type macro checking on URL %s to see if it exists" % (name, objURL))
+        objExists = False
+        updated = None
+        #If we get 404 it definitely does not exist
+        if (res.status_code == 404):
+            logger.debug("URL %s is throwing a 404, assuming new object creation" % (url))
+        elif (res.status_code != requests.codes.ok):
+            logger.error("URL %s in app %s status code %s reason %s, response: '%s'" % (url, app, res.status_code, res.reason, res.text))
+        else:
+            #However the fact that we did not get a 404 does not mean it exists in the context we expect it to, perhaps it's global and from another app context?
+            #or perhaps it's app level but we're restoring a private object...
+            logger.debug("Attempting to JSON loads on %s" % (res.text))
+            resDict = json.loads(res.text)
+            for entry in resDict['entry']:
+                sharingLevel = entry['acl']['sharing']
+                appContext = entry['acl']['app']
+                updatedStr = entry['updated']
+                updated = determineTime(updatedStr, name, app, "macro")
+                if appContext == app and (sharing == 'app' or sharing=='global') and (sharingLevel == 'app' or sharingLevel == 'global'):
+                    objExists = True
+                    logger.debug("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, app, objURL, sharingLevel, updated))
+                elif appContext == app and sharing == 'user' and sharingLevel == "user":
+                    objExists = True
+                    logger.debug("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, app, objURL, sharingLevel, updated))
+                elif appContext == app and sharingLevel == "user" and (sharing == "app" or sharing == "global"):
+                    logger.info("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s, this is a problem because we cannot create a private object in this context, will attempt to create an app level object" % (name, app, objURL, sharingLevel, updated))
+                    url = "%s/servicesNS/nobody/%s/properties/macros" % (splunk_rest_dest, app)
+                    logger.debug("name %s of type macro in app context %s new url is %s" % (name, app, url))
+                else:
+                    logger.debug("name %s of type macro in app context %s, found the object with this name in sharingLevel %s and appContext %s, updated time of %s" % (name, app, sharingLevel, appContext, updated))
+        
+        if objExists == True and not (override or overrideAlways):
+            logger.info("%s of type macro in app %s on URL %s exists, however override/overrideAlways is not set so not changing this macro" % (name, app, objURL))
+            appendToResults(macroResults, 'creationSkip', objURL)
+            continue
+        elif objExists == True and override and not curUpdated > updated:
+            logger.info("%s of type macro in app %s on URL %s exists, override is set but the source copy has modification time of %s destination has time of %s, skipping" % (name, app, objURL, curUpdated, updated))
+            appendToResults(macroResults, 'creationSkip', objURL)
+            continue
+        
+        createOrUpdate = None
+        if objExists == True:
+            createOrUpdate = "update"
+        else:
+            createOrUpdate = "create"
+        
+        logger.info("Attempting to %s macro %s on URL with name %s in app %s" % (createOrUpdate, name, url, app))
 
         payload = { "__stanza" : name }
         #Create macro
         #I cannot seem to get this working on the /conf URL but this works so good enough, and it's in the REST API manual...
         #servicesNS/-/search/properties/macros
         #__stanza = <name>
-        
         macroCreationSuccessRes = False
-        res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
-        if (res.status_code != requests.codes.ok and res.status_code != 201):
-            logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s', owner %s" % (name, app, url, res.status_code, res.reason, res.text, owner))
-            macroCreationFailure.append(name)
-            if res.status_code == 409:
-                #Delete the duplicate private object rather than leave it there for no purpose
-                url = url[:-4]
-                logger.warn("Deleting the private object as it could not be re-owned %s of type macro in app %s with URL %s" % (name, app, url))
-                requests.delete(url, auth=(destUsername,destPassword), verify=False)
-        else:
-            #Macros always delete with the username in this URL context
-            deletionURL = "%s/servicesNS/%s/%s/configs/conf-macros/%s" % (splunk_rest_dest, owner, app, name)
-            logger.debug("%s of type macro in app %s recording deletion URL as %s with owner %s" % (name, app, deletionURL, owner))
-            macroCreationSuccess.append(deletionURL)
-            macroCreationSuccessRes = True
+        if objExists == False:
+            macroCreationSuccessRes = False
+            res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+            if (res.status_code != requests.codes.ok and res.status_code != 201):
+                logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s', owner %s" % (name, app, url, res.status_code, res.reason, res.text, owner))
+                appendToResults(macroResults, 'creationFailure', name)
+                if res.status_code == 409:
+                    #Delete the duplicate private object rather than leave it there for no purpose
+                    url = url[:-4]
+                    logger.warn("Deleting the private object as it could not be re-owned %s of type macro in app %s with URL %s" % (name, app, url))
+                    requests.delete(url, auth=(destUsername,destPassword), verify=False)
+            else:
+                #Macros always delete with the username in this URL context
+                deletionURL = "%s/servicesNS/%s/%s/configs/conf-macros/%s" % (splunk_rest_dest, owner, app, name)
+                logger.debug("%s of type macro in app %s recording deletion URL as %s with owner %s" % (name, app, deletionURL, owner))
+                appendToResults(macroResults, 'creationSuccess', deletionURL)
+                macroCreationSuccessRes = True
 
-        logger.debug("%s of type macro in app %s, received response of: '%s'" % (name, app, res.text))
+            logger.debug("%s of type macro in app %s, received response of: '%s'" % (name, app, res.text))
         
         #Now we have created the macro, modify it so it has some real content
         url = "%s/servicesNS/%s/%s/properties/macros/%s" % (splunk_rest_dest, owner, app, name)
@@ -638,12 +827,16 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroCreationSuccess
         res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
         if (res.status_code != requests.codes.ok and res.status_code != 201):
             logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s'" % (name, app, url, res.status_code, res.reason, res.text))
-            macroCreationFailure.append(name)
-            if macroCreationSuccessRes:
-                macroCreationSuccess.pop()
+            
+            if objExists == False:
+                appendToResults(macroResults, 'creationFailure', name)
+                popLastResult(macroResults, 'macroCreationSuccess')
+                logger.warn("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
+                requests.delete(url, auth=(destUsername,destPassword), verify=False)
+            else:
+                appendToResults(macroResults, 'updateFailure', name)
+            
             macroCreationSuccessRes = False
-            logger.warn("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
-            requests.delete(url, auth=(destUsername,destPassword), verify=False)
         else:
             #Re-owning it, I've switched URL's again here but it seems to be working so will not change it
             url = "%s/servicesNS/%s/%s/configs/conf-macros/%s/acl" % (splunk_rest_dest, owner, app, name)
@@ -656,17 +849,25 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroCreationSuccess
                 deletionURL = "%s/servicesNS/%s/%s/configs/conf-macros/%s" % (splunk_rest_dest, owner, app, name)
                 logger.info("%s of type macro in app %s recording deletion URL as user URL due to change ownership failure %s" % (name, app, deletionURL))
                 #Remove the old record
-                if macroCreationSuccessRes:
-                    macroCreationSuccess.pop()
-                macroCreationSuccessRes = False
-                url = url[:-4]
-                logger.warn("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
-                requests.delete(url, auth=(destUsername,destPassword), verify=False)
+                if objExists == False:
+                    popLastResult(macroResults, 'macroCreationSuccess')
+                    macroCreationSuccessRes = False
+                    url = url[:-4]
+                    logger.warn("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
+                    requests.delete(url, auth=(destUsername,destPassword), verify=False)
+                    appendToResults(macroResults, 'creationFailure', name)
+                else:
+                    appendToResults(macroResults, 'updateFailure', name)
+                    macroCreationSuccessRes = False
             else:
                 logger.debug("%s of type macro in app %s, ownership changed with response '%s', new owner %s and sharing level %s" % (name, app, res.text, owner, sharing))
+                if objExists == True:
+                    appendToResults(macroResults, 'updateSuccess', name)
             if macroCreationSuccessRes:
-                logger.info("Created %s of type macro in app %s owner is %s sharing level %s" % (name, app, owner, sharing))
-
+                logger.info("%s %s of type macro in app %s owner is %s sharing level %s was successful" % (createOrUpdate, name, app, owner, sharing))
+            else:
+               logger.warn("%s %s of type macro in app %s owner is %s sharing level %s was not successful, a failure occurred" % (createOrUpdate, name, app, owner, sharing))
+               
 ###########################
 #
 # Migration functions
@@ -680,16 +881,16 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroCreationSuccess
 # Dashboards
 # 
 ###########################
-def dashboards(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def dashboards(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "disabled", "eai:appName", "eai:digest", "eai:userName", "isDashboard", "isVisible", "label", "rootNode", "description" ]
-    return runQueries(app, "/data/ui/views", "dashboard", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/ui/views", "dashboard", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
 ###########################
 #
 # Saved Searches
 # 
 ###########################
-def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, ignoreVSID, disableAlertsOrReportsOnMigration):
+def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, ignoreVSID, disableAlertsOrReportsOnMigration, override, overrideAlways):
     ignoreList = [ "embed.enabled", "triggered_alert_count" ]
     
     #View states gracefully fail in the GUI, via the REST API you cannot create the saved search if the view state does not exist
@@ -697,127 +898,127 @@ def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntitie
     if ignoreVSID:
         ignoreList.append("vsid")
     
-    return runQueries(app, "/saved/searches", "savedsearches", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, disableAlertsOrReportsOnMigration=disableAlertsOrReportsOnMigration)
+    return runQueries(app, "/saved/searches", "savedsearches", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, disableAlertsOrReportsOnMigration=disableAlertsOrReportsOnMigration, override=override, overrideAlways=overrideAlways)
 
 ###########################
 #
 # field definitions
 # 
 ###########################
-def calcfields(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def calcfields(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "attribute", "type" ]
     aliasAttributes = { "field.name" : "name" }
-    return runQueries(app, "/data/props/calcfields", "calcfields", ignoreList, destApp, aliasAttributes, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/props/calcfields", "calcfields", ignoreList, destApp, aliasAttributes, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
     
-def fieldaliases(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def fieldaliases(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "attribute", "type", "value" ]
-    return runQueries(app, "/data/props/fieldaliases", "fieldaliases", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/props/fieldaliases", "fieldaliases", ignoreList, destApp, nameOverride="name", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)            
 
-def fieldextractions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def fieldextractions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "attribute" ]
-    return runQueries(app, "/data/props/extractions", "fieldextractions", ignoreList, destApp, {}, { "Inline" : "EXTRACT", "Uses transform" : "REPORT" }, "attribute", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/props/extractions", "fieldextractions", ignoreList, destApp, {}, { "Inline" : "EXTRACT", "Uses transform" : "REPORT" }, "attribute", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
-def fieldtransformations(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def fieldtransformations(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "attribute", "DEFAULT_VALUE", "DEPTH_LIMIT", "LOOKAHEAD", "MATCH_LIMIT", "WRITE_META", "eai:appName", "eai:userName", "DEST_KEY" ]
-    return runQueries(app, "/data/transforms/extractions", "fieldtransformations", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/transforms/extractions", "fieldtransformations", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
     
-def workflowactions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def workflowactions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "disabled", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/data/ui/workflow-actions", "workflow-actions", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/ui/workflow-actions", "workflow-actions", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
-def sourcetyperenaming(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def sourcetyperenaming(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "attribute", "disabled", "eai:appName", "eai:userName", "stanza", "type" ]
-    return runQueries(app, "/data/props/sourcetype-rename", "sourcetype-rename", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/props/sourcetype-rename", "sourcetype-rename", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
 ###########################
 #
 # tags
 # 
 ##########################
-def tags(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def tags(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "disabled", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/configs/conf-tags", "tags", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/configs/conf-tags", "tags", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
 ###########################
 #
 # eventtypes
 # 
 ##########################
-def eventtypes(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def eventtypes(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "disabled", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/saved/eventtypes", "eventtypes", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/saved/eventtypes", "eventtypes", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
 ###########################
 #
 # navMenus
 # 
 ##########################
-def navMenu(app, destApp, override, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def navMenu(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "disabled", "eai:appName", "eai:userName", "eai:digest", "rootNode" ]
     #If override we override the default nav menu of the destination app
-    return runQueries(app, "/data/ui/nav", "navMenu", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, override=override, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/ui/nav", "navMenu", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, override=override, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, overrideAlways=overrideAlways)
 
 ###########################
 #
 # data models
 # 
 ##########################
-def datamodels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def datamodels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "disabled", "eai:appName", "eai:userName", "eai:digest", "eai:type", "acceleration.allowed" ]
     #If override we override the default nav menu of the destination app
-    return runQueries(app, "/datamodel/model", "datamodels", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/datamodel/model", "datamodels", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
 ###########################
 #
 # collections
 #
 ##########################
-def collections(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def collections(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "eai:appName", "eai:userName", "type" ]
     #nobody is the only username that can be used when working with collections
-    return runQueries(app, "/storage/collections/config", "collections (kvstore definition)", ignoreList, destApp,destOwner="nobody", noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/storage/collections/config", "collections (kvstore definition)", ignoreList, destApp,destOwner="nobody", noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
 ###########################
 #
 # viewstates
 #
 ##########################
-def viewstates(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def viewstates(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "eai:appName", "eai:userName" ]
     #nobody is the only username that can be used when working with collections
-    return runQueries(app, "/configs/conf-viewstates", "viewstates", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/configs/conf-viewstates", "viewstates", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
 ###########################
 #
 # time labels (conf-times)
 #
 ##########################
-def times(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def times(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "disabled", "eai:appName", "eai:userName", "header_label" ]
-    return runQueries(app, "/configs/conf-times", "times (conf-times)", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/configs/conf-times", "times (conf-times)", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
 ###########################
 #
 # panels
 #
 ##########################
-def panels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def panels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "disabled", "eai:digest", "panel.title", "rootNode", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/data/ui/panels", "pre-built dashboard panels", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/ui/panels", "pre-built dashboard panels", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
     
 ###########################
 #
 # lookups (definition/automatic)
 #
 ##########################
-def lookupDefinitions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def lookupDefinitions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "disabled", "eai:appName", "eai:userName", "CAN_OPTIMIZE", "CLEAN_KEYS", "DEPTH_LIMIT", "KEEP_EMPTY_VALS", "LOOKAHEAD", "MATCH_LIMIT", "MV_ADD", "SOURCE_KEY", "WRITE_META", "fields_array", "type" ]
     #If override we override the default nav menu of the destination app
-    return runQueries(app, "/data/transforms/lookups", "lookup definition", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/transforms/lookups", "lookup definition", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
-def automaticLookups(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly):
+def automaticLookups(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
     ignoreList = [ "attribute", "type", "value" ]
-    return runQueries(app, "/data/props/lookups", "automatic lookup", ignoreList, destApp, {}, {}, "attribute", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly)
+    return runQueries(app, "/data/props/lookups", "automatic lookup", ignoreList, destApp, {}, {}, "attribute", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
 ###########################
 #
@@ -825,7 +1026,17 @@ def automaticLookups(app, destApp, destOwner, noPrivate, noDisabled, includeEnti
 #
 ##########################
 
-def logDeletionScriptInLogs(list, printPasswords, destUsername, destPassword):
+def logDeletionScriptInLogs(theDict, printPasswords, destUsername, destPassword):
+    list = None
+    
+    #If we have nothing to log return
+    if not theDict:
+        return
+    if 'creationSuccess' in theDict:
+        list = theDict['creationSuccess']
+    else:
+        return
+    
     for item in list:
         item = item.replace("(", "\(").replace(")","\)")
         if printPasswords:
@@ -833,27 +1044,48 @@ def logDeletionScriptInLogs(list, printPasswords, destUsername, destPassword):
         else:
             logger.info("curl -k --request DELETE %s" % (item))
 
-def logCreationFailure(list, type, app):
+def logCreationFailure(theDict, type, app):
+    list = None
+    #If we have nothing to log return
+    if not theDict:
+        return    
+    if 'creationFailure' in theDict:
+        list = theDict['creationFailure']
+    else:
+        return
+    
     for item in list:
         logger.warn("In App %s, %s '%s' failed to create" % (app, type, item))
 
-def printDeletionToConsole(list, printPasswords, destUsername, destPassword):
-    for item in list:
-        item = item.replace("(", "\(").replace(")","\)")
-        if printPasswords:
-            print "curl -k -u %s:%s --request DELETE %s" % (destUsername, destPassword, item)
-        else:
-            print "curl -k --request DELETE %s" % (item)
+def logStats(resultsDict, type, app):
+    successList = []
+    failureList = []
+    skippedList = []
+    updateSuccess = []
+    updateFailure = []
+    
+    #If we have nothing to log return
+    if not resultsDict:
+        return
 
-def logStats(successList, failureList, type, app):
-    logger.info("App %s, %d %s successfully migrated %d %s failed to migrate" % (app, len(successList), type, len(failureList), type))
+    if 'creationSuccess' in resultsDict:
+        successList = resultsDict['creationSuccess']
+    if 'creationFailure' in resultsDict:
+        failureList = resultsDict['creationFailure']
+    if 'creationSkip' in resultsDict:
+        skippedList = resultsDict['creationSkip']
+    if 'updateSuccess' in resultsDict:
+        updateSuccess = resultsDict['updateSuccess']
+    if 'updateFailure' in resultsDict:
+        updateFailure = resultsDict['updateFailure']
+    
+    logger.info("App %s, %d %s successfully migrated %d %s failed to migrate, %s were skipped due to existing already, %s were updated, %s failed to update" % (app, len(successList), type, len(failureList), type, len(skippedList), len(updateSuccess), len(updateFailure)))
 
 def handleFailureLogging(failureList, type, app):
     logCreationFailure(failureList, type, app)
 
 def logDeletion(successList, printPasswords, destUsername, destPassword):
-    logDeletionScriptInLogs(successList, printPasswords, destUsername, destPassword)    
-    #printDeletionToConsole(successList, printPasswords, destUsername, destPassword)
+    logDeletionScriptInLogs(successList, printPasswords, destUsername, destPassword)
 
 #helper function as per https://stackoverflow.com/questions/31433989/return-copy-of-dictionary-excluding-specified-keys
 def without_keys(d, keys):
@@ -865,42 +1097,25 @@ def without_keys(d, keys):
 #   these are used later in the code to print what worked, what failed et cetera
 #
 ##########################
-savedsearchCreationSuccess = []
-savedsearchCreationFailure = []
-calcfieldsCreationSuccess = []
-calcfieldsCreationFailure = []
-fieldaliasesCreationSuccess = []
-fieldaliasesCreationFailure = []
-fieldextractionsCreationSuccess = []
-fieldextractionsCreationFailure = []
-dashboardCreationSuccess = []
-dashboardCreationFailure = []
-fieldTransformationsSuccess = []
-fieldTransformationsFailure = []
-workflowActionsSuccess = []
-workflowActionsFailure = []
-sourcetypeRenamingSuccess = []
-sourcetypeRenamingFailure = []
-tagsSuccess = []
-tagsFailure = []
-eventtypesSuccess = []
-eventtypesFailure = []
-navMenuSuccess = []
-navMenuFailure = []
-datamodelSuccess = []
-datamodelFailure = []
-lookupDefinitionsSuccess = []
-lookupDefinitionsFailure = []
-automaticLookupsSuccess = []
-automaticLookupsFailure = []
-collectionsSuccess = []
-collectionsFailure = []
-viewstatesSuccess = []
-viewstatesFailure = []
-timesSuccess = []
-timesFailure = []
-panelsSuccess = []
-panelsFailure = []
+savedSearchResults = None
+calcfieldsResults = None
+fieldaliasesResults = None
+fieldextractionsResults = None
+dashboardResults= None
+fieldTransformationsResults = None
+timesResults = None
+panelsResults = None
+workflowActionsResults = None
+sourcetypeRenamingResults = None
+tagsResults = None
+eventtypeResults = None
+navMenuResults = None
+datamodelResults = None
+lookupDefinitionsResults = None
+automaticLookupsResults = None
+collectionsResults = None
+viewstatesResults = None
+macroResults = None
 
 #If the all switch is provided, migrate everything
 if args.all:
@@ -962,98 +1177,98 @@ logger.info("transfer splunk knowledge objects run with arguments %s" % (cleanAr
 ##########################
 if args.macros:
     logger.info("Begin macros transfer")
-    macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    macroResults = macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End macros transfer")
 
 if args.tags:
     logger.info("Begin tags transfer")
-    (tagsSuccess, tagsFailure) = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (tagsResults) = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End tags transfer")
 
 if args.eventtypes:
     logger.info("Begin eventtypes transfer")
-    (eventtypesSuccess, eventtypesFailure) = eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (eventtypeResults) = eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End eventtypes transfer")
 
 if args.calcFields:
     logger.info("Begin calcFields transfer")
-    (calcfieldsCreationSuccess, calcfieldsCreationFailure) = calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (calcfieldsResults) = calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End calcFields transfer")
 
 if args.fieldAlias:
     logger.info("Begin fieldAlias transfer")
-    (fieldaliasesCreationSuccess, fieldaliasesCreationFailure) = fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (fieldaliasesResults) = fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End fieldAlias transfer")
 
 if args.fieldTransforms:
     logger.info("Begin fieldTransforms transfer")    
-    (fieldTransformationsSuccess, fieldTransformationsFailure) = fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (fieldTransformationsResults) = fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End fieldTransforms transfer")
 
 if args.fieldExtraction:
     logger.info("Begin fieldExtraction transfer")    
-    (fieldextractionsCreationSuccess, fieldextractionsCreationFailure) = fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (fieldextractionsResults) = fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End fieldExtraction transfer")
 
 if args.collections:
     logger.info("Begin collections (kvstore definition) transfer")
-    (collectionsSuccess, collectionsFailure) = collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (collectionsResults) = collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End collections (kvstore definition) transfer")
 
 if args.lookupDefinition:
     logger.info("Begin lookupDefinitions transfer")
-    (lookupDefinitionsSuccess, lookupDefinitionsFailure) = lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (lookupDefinitionsResults) = lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End lookupDefinitions transfer")
 
 if args.automaticLookup:
     logger.info("Begin automaticLookup transfer")
-    (automaticLookupsSuccess, automaticLookupsFailure) = automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (automaticLookupsResults) = automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End automaticLookup transfer")
 
 if args.times:
     logger.info("Begin times (conf-times) transfer")
-    (timesSuccess, timesFailure) = times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (timesResults) = times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End times (conf-times) transfer")
 
 if args.viewstates:
     logger.info("Begin viewstates transfer")
-    (viewstatesSuccess, viewstatesFailure) = viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (viewstatesResults) = viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End viewstates transfer")
     
 if args.panels:
     logger.info("Begin pre-built dashboard panels transfer")
-    (panelsSuccess, panelsFailure) = panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (panelsResults) = panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End pre-built dashboard panels transfer")
     
 if args.datamodels:
     logger.info("Begin datamodels transfer")
-    (datamodelSuccess, datamodelFailure) = datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
+    (datamodelResults) = datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End datamodels transfer")
 
 if args.dashboards:
     logger.info("Begin dashboards transfer")
-    (dashboardCreationSuccess, dashboardCreationFailure) = dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
-    logger.info("End dashboards transfer")    
+    (dashboardResults) = dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    logger.info("End dashboards transfer")
 
 if args.savedsearches:
     logger.info("Begin savedsearches transfer")
-    (savedsearchCreationSuccess, savedsearchCreationFailure) = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration)
+    (savedSearchResults) = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End savedsearches transfer")
 
 if args.workflowActions:
     logger.info("Begin workflowActions transfer")
-    (workflowActionsSuccess, workflowActionsFailure) = workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
-    logger.info("End workflowActions transfer")    
+    (workflowActionsResults) = workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    logger.info("End workflowActions transfer")
 
 if args.sourcetypeRenaming:
     logger.info("Begin sourcetypeRenaming transfer")
-    (sourcetypeRenamingSuccess, sourcetypeRenamingFailure) = sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
-    logger.info("End sourcetypeRenaming transfer")        
+    (sourcetypeRenamingResults) = sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    logger.info("End sourcetypeRenaming transfer")
 
-if args.navMenu or args.navMenuWithDefaultOverride:
+if args.navMenu:
     logger.info("Begin navMenu transfer")
-    (navMenuSuccess, navMenuFailure) = navMenu(srcApp, destApp, args.navMenuWithDefaultOverride, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly)
-    logger.info("End navMenu transfer")        
+    (navMenuResults) = navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    logger.info("End navMenu transfer")
 
 ###########################
 #
@@ -1062,65 +1277,65 @@ if args.navMenu or args.navMenuWithDefaultOverride:
 #   we also log failures and stats around the number of successful/failed migrations et cetera
 #
 ##########################
-logDeletion(macroCreationSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(tagsSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(eventtypesSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(calcfieldsCreationSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(fieldaliasesCreationSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(fieldextractionsCreationSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(fieldTransformationsSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(lookupDefinitionsSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(automaticLookupsSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(viewstatesSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(datamodelSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(dashboardCreationSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(savedsearchCreationSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(workflowActionsSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(sourcetypeRenamingSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(navMenuSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(collectionsSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(timesSuccess, args.printPasswords, destUsername, destPassword)
-logDeletion(panelsSuccess, args.printPasswords, destUsername, destPassword)
+logDeletion(macroResults, args.printPasswords, destUsername, destPassword)
+logDeletion(tagsResults, args.printPasswords, destUsername, destPassword)
+logDeletion(eventtypeResults, args.printPasswords, destUsername, destPassword)
+logDeletion(calcfieldsResults, args.printPasswords, destUsername, destPassword)
+logDeletion(fieldaliasesResults, args.printPasswords, destUsername, destPassword)
+logDeletion(fieldextractionsResults, args.printPasswords, destUsername, destPassword)
+logDeletion(fieldTransformationsResults, args.printPasswords, destUsername, destPassword)
+logDeletion(lookupDefinitionsResults, args.printPasswords, destUsername, destPassword)
+logDeletion(automaticLookupsResults, args.printPasswords, destUsername, destPassword)
+logDeletion(viewstatesResults, args.printPasswords, destUsername, destPassword)
+logDeletion(datamodelResults, args.printPasswords, destUsername, destPassword)
+logDeletion(dashboardResults, args.printPasswords, destUsername, destPassword)
+logDeletion(savedSearchResults, args.printPasswords, destUsername, destPassword)
+logDeletion(workflowActionsResults, args.printPasswords, destUsername, destPassword)
+logDeletion(sourcetypeRenamingResults, args.printPasswords, destUsername, destPassword)
+logDeletion(navMenuResults, args.printPasswords, destUsername, destPassword)
+logDeletion(collectionsResults, args.printPasswords, destUsername, destPassword)
+logDeletion(timesResults, args.printPasswords, destUsername, destPassword)
+logDeletion(panelsResults, args.printPasswords, destUsername, destPassword)
 
-handleFailureLogging(macroCreationFailure, "macros", srcApp)
-handleFailureLogging(tagsFailure, "tags", srcApp)
-handleFailureLogging(eventtypesFailure, "eventtypes", srcApp)
-handleFailureLogging(calcfieldsCreationFailure, "calcfields", srcApp)
-handleFailureLogging(fieldaliasesCreationFailure, "fieldaliases", srcApp)
-handleFailureLogging(fieldextractionsCreationFailure, "fieldextractions", srcApp)
-handleFailureLogging(fieldTransformationsFailure, "fieldtransformations", srcApp)
-handleFailureLogging(lookupDefinitionsFailure, "lookupdef", srcApp)
-handleFailureLogging(automaticLookupsFailure, "automatic lookup", srcApp)
-handleFailureLogging(viewstatesFailure, "viewstates", srcApp)
-handleFailureLogging(datamodelFailure, "datamodels", srcApp)
-handleFailureLogging(dashboardCreationFailure, "dashboard", srcApp)
-handleFailureLogging(savedsearchCreationFailure, "savedsearch", srcApp)
-handleFailureLogging(workflowActionsFailure, "workflowactions", srcApp)
-handleFailureLogging(sourcetypeRenamingFailure, "sourcetype-renaming", srcApp)
-handleFailureLogging(navMenuFailure, "navMenu", srcApp)
-handleFailureLogging(collectionsFailure, "collections", srcApp)
-handleFailureLogging(timesFailure, "collections", srcApp)
-handleFailureLogging(panelsFailure, "collections", srcApp)
+handleFailureLogging(macroResults, "macros", srcApp)
+handleFailureLogging(tagsResults, "tags", srcApp)
+handleFailureLogging(eventtypeResults, "eventtypes", srcApp)
+handleFailureLogging(calcfieldsResults, "calcfields", srcApp)
+handleFailureLogging(fieldaliasesResults, "fieldaliases", srcApp)
+handleFailureLogging(fieldextractionsResults, "fieldextractions", srcApp)
+handleFailureLogging(fieldTransformationsResults, "fieldtransformations", srcApp)
+handleFailureLogging(lookupDefinitionsResults, "lookupdef", srcApp)
+handleFailureLogging(automaticLookupsResults, "automatic lookup", srcApp)
+handleFailureLogging(viewstatesResults, "viewstates", srcApp)
+handleFailureLogging(datamodelResults, "datamodels", srcApp)
+handleFailureLogging(dashboardResults, "dashboard", srcApp)
+handleFailureLogging(savedSearchResults, "savedsearch", srcApp)
+handleFailureLogging(workflowActionsResults, "workflowactions", srcApp)
+handleFailureLogging(sourcetypeRenamingResults, "sourcetype-renaming", srcApp)
+handleFailureLogging(navMenuResults, "navMenu", srcApp)
+handleFailureLogging(collectionsResults, "collections", srcApp)
+handleFailureLogging(timesResults, "collections", srcApp)
+handleFailureLogging(panelsResults, "collections", srcApp)
 
-logStats(macroCreationSuccess, macroCreationFailure, "macros", srcApp)
-logStats(tagsSuccess, tagsFailure, "tags", srcApp)
-logStats(eventtypesSuccess, eventtypesFailure, "eventtypes", srcApp)
-logStats(calcfieldsCreationSuccess, calcfieldsCreationFailure, "calcfields", srcApp)
-logStats(fieldaliasesCreationSuccess, fieldaliasesCreationFailure, "fieldaliases", srcApp)
-logStats(fieldextractionsCreationSuccess, fieldextractionsCreationFailure, "fieldextractions", srcApp)
-logStats(fieldTransformationsSuccess, fieldTransformationsFailure, "fieldtransformations", srcApp)
-logStats(lookupDefinitionsSuccess, lookupDefinitionsFailure, "lookupdef", srcApp)
-logStats(automaticLookupsSuccess, automaticLookupsFailure, "automatic lookup", srcApp)
-logStats(viewstatesSuccess, viewstatesFailure, "viewstates", srcApp)
-logStats(datamodelSuccess, datamodelFailure, "datamodels", srcApp)
-logStats(dashboardCreationSuccess, dashboardCreationFailure, "dashboard", srcApp)
-logStats(savedsearchCreationSuccess, savedsearchCreationFailure, "savedsearch", srcApp)
-logStats(workflowActionsSuccess, workflowActionsFailure, "workflowactions", srcApp)
-logStats(sourcetypeRenamingSuccess, sourcetypeRenamingFailure, "sourcetype-renaming", srcApp)
-logStats(navMenuSuccess, navMenuFailure, "navMenu", srcApp)
-logStats(collectionsSuccess, collectionsFailure, "collections", srcApp)
-logStats(timesSuccess, timesFailure, "times (conf-times)", srcApp)
-logStats(panelsSuccess, panelsFailure, "pre-built dashboard panels", srcApp)
+logStats(macroResults, "macros", srcApp)
+logStats(tagsResults, "tags", srcApp)
+logStats(eventtypeResults, "eventtypes", srcApp)
+logStats(calcfieldsResults, "calcfields", srcApp)
+logStats(fieldaliasesResults, "fieldaliases", srcApp)
+logStats(fieldextractionsResults, "fieldextractions", srcApp)
+logStats(fieldTransformationsResults, "fieldtransformations", srcApp)
+logStats(lookupDefinitionsResults, "lookupdef", srcApp)
+logStats(automaticLookupsResults, "automatic lookup", srcApp)
+logStats(viewstatesResults, "viewstates", srcApp)
+logStats(datamodelResults, "datamodels", srcApp)
+logStats(dashboardResults, "dashboard", srcApp)
+logStats(savedSearchResults, "savedsearch", srcApp)
+logStats(workflowActionsResults, "workflowactions", srcApp)
+logStats(sourcetypeRenamingResults, "sourcetype-renaming", srcApp)
+logStats(navMenuResults, "navMenu", srcApp)
+logStats(collectionsResults, "collections", srcApp)
+logStats(timesResults, "times (conf-times)", srcApp)
+logStats(panelsResults, "pre-built dashboard panels", srcApp)
 
-logging.info("The undo command is: grep -o \"curl.*DELETE.*\" /tmp/transfer_knowledgeobj.log | grep -v \"curl\.\*DELETE\"")
-logging.info("Done")
+logger.info("The undo command is: grep -o \"curl.*DELETE.*\" /tmp/transfer_knowledgeobj.log | grep -v \"curl\.\*DELETE\"")
+logger.info("Done")
