@@ -436,14 +436,15 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 sharingLevel = entry['acl']['sharing']
                 appContext = entry['acl']['app']
                 updatedStr = entry['updated']
+                remoteObjOwner = entry['acl']['owner']
                 updated = determineTime(updatedStr, name, app, type)
                 if appContext == app and (sharing == 'app' or sharing=='global') and (sharingLevel == 'app' or sharingLevel == 'global'):
                     objExists = True
                     logger.debug("name %s of type %s in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, type, app, objURL, sharingLevel, updated))
-                elif appContext == app and sharing == 'user' and sharingLevel == "user":
+                elif appContext == app and sharing == 'user' and sharingLevel == "user" and remoteObjOwner == owner:
                     objExists = True
                     logger.debug("name %s of type %s in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, type, app, objURL, sharingLevel, updated))
-                elif appContext == app and sharingLevel == "user" and (sharing == "app" or sharing == "global"):
+                elif appContext == app and sharingLevel == "user" and remoteObjOwner == owner and (sharing == "app" or sharing == "global"):
                     logger.info("name %s of type %s in app context %s found to exist on url %s with sharing of %s, updated time of %s, this is a problem because we cannot create a private object in this context, will attempt to create an app level object" % (name, type, app, objURL, sharingLevel, updated))
                     url = "%s/servicesNS/nobody/%s/%s" % (splunk_rest_dest, app, endpoint)
                     logger.debug("name %s of type %s in app context %s new url is %s" % (name, type, app, url))
@@ -579,6 +580,13 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 else:
                     logger.debug("Post-update of %s of type %s in app %s with URL %s result is: '%s' owner of %s" % (name, type, app, url, res.text, owner))
                     appendToResults(actionResults, 'updateSuccess', name)
+                
+                #Re-owning it to the previous owner
+                if sharing != "user":
+                    url = "%s/acl" % (url)
+                    payload = { "owner": owner, "sharing" : sharing }
+                    logger.info("App or Global sharing in use, attempting to change ownership of %s with name %s via URL %s to owner %s in app %s with sharing %s" % (type, name, url, owner, app, sharing))
+                    res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
             else:
                 appendToResults(actionResults, 'creationSkip', objURL)
                 logger.info("%s of type %s in app %s owner of %s, object already exists and override is not set, nothing to do here" % (name, type, app, owner))
@@ -757,13 +765,14 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
                 appContext = entry['acl']['app']
                 updatedStr = entry['updated']
                 updated = determineTime(updatedStr, name, app, "macro")
+                remoteObjOwner = entry['acl']['owner']
                 if appContext == app and (sharing == 'app' or sharing=='global') and (sharingLevel == 'app' or sharingLevel == 'global'):
                     objExists = True
                     logger.debug("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, app, objURL, sharingLevel, updated))
-                elif appContext == app and sharing == 'user' and sharingLevel == "user":
+                elif appContext == app and sharing == 'user' and sharingLevel == "user" and remoteObjOwner == owner:
                     objExists = True
                     logger.debug("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, app, objURL, sharingLevel, updated))
-                elif appContext == app and sharingLevel == "user" and (sharing == "app" or sharing == "global"):
+                elif appContext == app and sharingLevel == "user" and remoteObjOwner == owner and (sharing == "app" or sharing == "global"):
                     logger.info("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s, this is a problem because we cannot create a private object in this context, will attempt to create an app level object" % (name, app, objURL, sharingLevel, updated))
                     url = "%s/servicesNS/nobody/%s/properties/macros" % (splunk_rest_dest, app)
                     logger.debug("name %s of type macro in app context %s new url is %s" % (name, app, url))
