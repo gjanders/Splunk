@@ -139,7 +139,7 @@ splunk_rest_dest = args.destURL
 def determineTime(timestampStr, name, app, type):
     logger.debug("Attempting to convert %s to timestamp for %s name, in app %s for type %s" % (timestampStr, name, app, type))
     ret = datetime.strptime(timestampStr[0:19],  "%Y-%m-%dT%H:%M:%S")
-    if timestampStr[18]=='+':
+    if timestampStr[19]=='+':
         ret-=timedelta(hours=int(z[20:22]),minutes=int(z[24:]))
     elif timestampStr[19]=='-':
         ret+=timedelta(hours=int(z[20:22]),minutes=int(z[24:]))
