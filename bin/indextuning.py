@@ -584,7 +584,8 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
 
                 #Skip the zero size estimated where storageRatio == 0.0 or license usage is zero
                 if (storageRatio != 0.0 and avgLicenseUsagePerDay != 0):
-                    estimatedDaysForCurrentSize = int(round(newCalcMaxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * undersizingContingency)/numberOfIndexers)))
+                  #estimatedDaysForCurrentSize = int(round(newCalcMaxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * undersizingContingency)/numberOfIndexers)))
+                    estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * undersizingContingency)/numberOfIndexers)))
                 
                 #If the commented size would result in data loss or an undersized index and we have a comment about this it's ok to keep it undersized
                 if (usageBasedCalculatedSize > newCalcMaxTotalDataSizeMB):
@@ -593,7 +594,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                         logger.info("Index: %s has more data than expected and has a comment-based sizing estimate of %s however average is %s, current size would fit %s days, frozenTimeInDays %s, increasing the size of this index, oldest data found is %s days old" % (indexName, configuredSizePerDay, avgLicenseUsagePerDay, estimatedDaysForCurrentSize, frozenTimePeriodInDays, earliestTime))
                     else:
                         logger.warn("Index: %s has more data than expected and has a comment-based sizing estimate of %s however average is %s, data loss is likely after %s days, frozenTimeInDays %s, oldest data found is %s days old" % (indexName, configuredSizePerDay, avgLicenseUsagePerDay, estimatedDaysForCurrentSize, frozenTimePeriodInDays, earliestTime))
-                        donotIncrease = True
+                        #donotIncrease = True
                 #If the newly calculated size has increased compared to previous size multiplied by the undersizing contingency
                 elif (estimatedDaysForCurrentSize < frozenTimePeriodInDays):
                     #We will increase the sizing for this index
@@ -842,6 +843,21 @@ if args.bucketTuning or args.indexSizing:
             (output, stderr, res) = utility.runOSProcess("cd %s; git checkout master; git pull" % (gitPath))
             if res == False:
                 logger.warn("git checkout master or git pull failed, output is '%s' stderr is '%s'" % (output, stderr))
+                #TODO below is copy and paste, should be a method/function 
+                logger.warn("git error occurred while attempting to work with directory {} stdout '{}' stderr '{}'".format(args.gitWorkingDir, output, stderr))
+                shutil.rmtree(args.gitWorkingDir)
+                os.makedirs(args.gitWorkingDir)
+                logger.debug("Attempting clone again from {}".format(args.gitRepoURL))
+
+                if args.gitFirstConnection:
+                    #This is a once off make it a switch?!
+                    (output, stderr, res) = utility.runOSProcess("ssh -n -o \"BatchMode yes\" -o StrictHostKeyChecking=no " + args.gitRepoURL[:args.gitRepoURL.find(":")])
+                    if res == False:
+                        logger.warn("Unexpected failure while attempting to trust the remote git repo. stdout '%s', stderr '%s'" % (output, stderr))
+
+                (output, stderr, res) = utility.runOSProcess("cd %s; git clone %s" % (args.gitWorkingDir, args.gitRepoURL))
+                if res == False:
+                    logger.warn("git clone failed for some reason...on url %s stdout '%s', stderr '%s'" % (args.gitRepoURL, output, stderr))
             
             #At this point we've written out the potential updates
             indextuning_indextempoutput.outputIndexFilesIntoTemp(logging, confFilesRequiringChanges, indexList, gitPath, indexesRequiringChanges, replaceSlashes=False)
@@ -908,8 +924,11 @@ if indexDirCheckRes:
             for entry in deadHotDirs[line]:
                 thedir = entry + "/" + line
                 if args.deadIndexDelete and not line == "\\$_index_name":
-                    logger.info("Wiping directory %s" % (thedir))
-                    shutil.rmtree(thedir)
+                    if os.path.isdir(thedir):
+                        logger.info("Wiping directory %s" % (thedir))
+                        shutil.rmtree(thedir)
+                    else:
+                        logger.warn("Directory does not exist, no deletion required")
                 else:
                     logger.info(thedir)
     else:
@@ -923,8 +942,11 @@ if indexDirCheckRes:
             for entry in deadColdDirs[line]:
                 thedir = entry + "/" + line
                 if args.deadIndexDelete and not line == "\\$_index_name":
-                    logger.info("Wiping directory %s" % (thedir))
-                    shutil.rmtree(thedir)
+                    if os.path.isdir(thedir):
+                        logger.info("Wiping directory %s" % (thedir))
+                        shutil.rmtree(thedir)
+                    else:
+                        logger.warn("Directory does not exist, no deletion required")
                 else:
                     logger.info(thedir)
     else:
@@ -938,13 +960,29 @@ if indexDirCheckRes:
             for entry in summariesDirsDead[line]:
                 thedir = entry + "/" + line
                 if args.deadIndexDelete and not line == "\\$_index_name":
-                    logger.info("Wiping directory %s" % (thedir))
-                    shutil.rmtree(thedir)
+                    if os.path.isdir(thedir):
+                        logger.info("Wiping directory %s" % (thedir))
+                        shutil.rmtree(thedir)
+                    else:
+                        logger.warn("Directory does not exist, no deletion required")
                 else:
                     logger.info(thedir)
     else:
         logger.info("No dead summary dirs found")
 
+    if args.deadIndexDelete:
+        uniqueDirectoriesChecked = hotDirsChecked + coldDirsChecked + summariesDirsChecked
+        uniqueDirectoriesChecked = list(set(uniqueDirectoriesChecked))
+        
+        for aDir in uniqueDirectoriesChecked:
+            subDirList = utility.listdirs(aDir)
+            for aSubDir in subDirList:
+                try:
+                    os.rmdir(aSubDir)
+                except OSError as e:
+                    continue
+                logger.info("Deleted empty directory %s" % (aSubDir))
+    
     if (len(deadHotDirs.keys()) > 0 and not args.deadIndexDelete):
         for line in deadHotDirs.keys():
             for entry in deadHotDirs[line]:
