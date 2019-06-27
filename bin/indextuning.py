@@ -1,4 +1,4 @@
-import re
+from __future__ import print_function
 import getpass
 import sys
 import os
@@ -12,50 +12,50 @@ import logging
 from logging.config import dictConfig
 import requests
 
-###############################
-#
-# What does this script do?
-#
-###############################
-# Attempts to use the output of the command:
-# splunk btool indexes list --debug
-# To determine all indexes configured on this Splunk indexer and then provides tuning based on the previously seen license usage & bucket sizing
-# in addition this script provides a list of directories which are located in the same directory as hot, cold or tstatsHomePath and if there is no matching
-# index configuration suggests deletion via an output file
-# 
-# The script takes no input, the script outputs copies of the relevant index configuration files with suggested tuning within the file so a diff command can be used to 
-# compare the output
-#
-# In more depth:
-# Index bucket sizing (maxDataSize setting)
-#   * Based on output of dbinspect command determining how many hours worth of data will fit into a bucket
-#   * Based on target number of hours determines if the bucket sizing is currently appropriate
-#   * Based on recent license usage, compression ratio, number of indexers/buckets approx if the license usage seems reasonable or not as a sanity check
-#   *   the above sanity check can cause issues *if* a very small amount of data exists in the index, resulting in compression ratios of 500:1 (500 times larger on disk)
-#   *   minSizeToCalculate exists to prevent this from happening
-#   * If bucket size is auto_high_volume, and tuned size*contingency is less than 750MB, then auto will be suggested
-#   * If bucket size is auto tuned, auto_high_volume will be suggested if tuned size * contingency is larger than 750MB
-#   * If bucket was using a size-based maxDataSize then the new value will be suggested (not recommended, auto/auto_high_volume are usually fine)
-#
-# Index sizing (maxTotalDataSizeMB)
-#   * Based on the last X days of license usage (configurable) and the storage compression ratio based on the most recent introspection data 
-#     and multiplied by the number of days before frozen, multiplied by contingency and divided by number of indexers to determine value per indexer
-#   * If the index has recent license usage *but* it does not match the minimum number of days we require for sizing purposes we do not size the index
-#     this covers, for example an index that has 2 days of license usage and it's too early to correctly re-size it
-#   * If the index has no data on the filesystem no tuning is done but this is recorded in the log (either a new index or an unused index)
-#   * If the index has zero recent license usage over the measuring period *and* it does not have a sizing comment then we cap it at the 
-#     current maximum size * contingency with a lower limit of lowerIndexSizeLimit, this parameter prevents bucket explosion from undersizing indexes
-#   * If the index has zero recent license usage over the measuring period *and* it does have a sizing comment then we do not change it
-#   * If the index has recent license usage and it is oversized, in excess of the percBeforeAdjustment then we adjust (oversized index)
-#   * If the index has recent license usage and it is undersized (including a % contingency we add), we adjust (undersized index) currently we do this even if sizing comments exist
-#     note that this particular scenario can result in the index becoming larger than the original sizing comment, it is assumed that data loss should be avoided by the script
-#   * Finally if oversized we sanity check that we are not dropping below the largest on-disk size * contingency on any indexer as that would result in deletion of data
-#
-# TODO an indexes datatype can be event or metric, if metric do we do the same tuning? 
-# Since dbinspect appears to work along with other queries assuming they can be treated the same for now...
+"""
+What does this script do?
 
-#In addition to console output we write the important info into a log file
-#console output for debugging purposes only
+ Attempts to use the output of the command:
+ splunk btool indexes list --debug
+ To determine all indexes configured on this Splunk indexer and then provides tuning based on the previously seen license usage & bucket sizing
+ in addition this script provides a list of directories which are located in the same directory as hot, cold or tstatsHomePath and if there is no matching
+ index configuration suggests deletion via an output file
+ 
+ The script takes no input, the script has multiple output options:
+ * output example index file that can be diffed
+ * create a git-based change
+ * create a git-based change and create a merge request in gitlab
+
+ In more depth:
+ Index bucket sizing (maxDataSize setting)
+   * Based on output of dbinspect command determining how many hours worth of data will fit into a bucket
+   * Based on target number of hours determines if the bucket sizing is currently appropriate
+   * Based on recent license usage, compression ratio, number of indexers/buckets approx if the license usage seems reasonable or not as a sanity check
+   *   the above sanity check can cause issues *if* a very small amount of data exists in the index, resulting in compression ratios of 500:1 (500 times larger on disk)
+   *   minSizeToCalculate exists to prevent this from happening
+   * If bucket size is auto_high_volume, and tuned size*contingency is less than 750MB, then auto will be suggested
+   * If bucket size is auto tuned, auto_high_volume will be suggested if tuned size * contingency is larger than 750MB
+   * If bucket was using a size-based maxDataSize then the new value will be suggested (not recommended, auto/auto_high_volume are usually fine)
+
+ Index sizing (maxTotalDataSizeMB)
+   * Based on the last X days of license usage (configurable) and the storage compression ratio based on the most recent introspection data 
+     and multiplied by the number of days before frozen, multiplied by contingency and divided by number of indexers to determine value per indexer
+   * If the index has recent license usage *but* it does not match the minimum number of days we require for sizing purposes we do not size the index
+     this covers, for example an index that has 2 days of license usage and it's too early to correctly re-size it
+   * If the index has no data on the filesystem no tuning is done but this is recorded in the log (either a new index or an unused index)
+   * If the index has zero recent license usage over the measuring period *and* it does not have a sizing comment then we cap it at the 
+     current maximum size * contingency with a lower limit of lowerIndexSizeLimit, this parameter prevents bucket explosion from undersizing indexes
+   * If the index has zero recent license usage over the measuring period *and* it does have a sizing comment then we do not change it
+   * If the index has recent license usage and it is oversized, in excess of the percBeforeAdjustment then we adjust (oversized index)
+   * If the index has recent license usage and it is undersized (including a % contingency we add), we adjust (undersized index) currently we do this even if sizing comments exist
+     note that this particular scenario can result in the index becoming larger than the original sizing comment, it is assumed that data loss should be avoided by the script
+   * Finally if oversized we sanity check that we are not dropping below the largest on-disk size * contingency on any indexer as that would result in deletion of data
+
+ TODO an indexes datatype can be event or metric, if metric do we do the same tuning? 
+ Since dbinspect appears to work along with other queries assuming they can be treated the same for now...
+"""
+
+#In addition to console output we write the important info into a log file, console output for debugging purposes only
 outputLogFile = "/tmp/indextuning.log"
 
 logging_config = dict(
@@ -100,7 +100,7 @@ parser.add_argument('-earliestLicense', help='Earliest point in time to find lic
 parser.add_argument('-latestLicense', help='Latest point in time to find license details (use @d to ensure this ends at midnight)', default="@d")
 parser.add_argument('-numberOfIndexers', help='Number of indexers the tuning should be based on', default="10", type=int)
 
-#Aim for 24 hours per bucket for now, we add contingency to this anyway
+#For bucket tuning, aim for 24 hours of data per bucket for now, we add contingency to this anyway
 parser.add_argument('-numHoursPerBucket', help='Aim for approximate number of hours per bucket (not including contingency)', default="24")
 
 #Add 20% contingency to the result for buckets
@@ -113,14 +113,13 @@ parser.add_argument('-sizingContingency', help='Contingency multiplier for index
 #Note an additional safety that checks the max on disk size per index can also override this
 #By having the sizingContingency larger than this setting we hope that re-sizing will rarely occur once increased correctly
 #as it would have to change quite a bit from the average...
-#parser.add_argument('-undersizingContingency', help='Contingency multiplier before an index is increased (i.e. 1.2 is if the index is undersized by less than 20% do nothing)', default=1.2, type=float)
 parser.add_argument('-undersizingContingency', help='Contingency multiplier before an index is increased (1.2 is if the index is undersized by less than 20 perc. do nothing)', default=1.2, type=float)
 
 #What host= filter do we use to find index on-disk sizing information for the compression ratio?
 parser.add_argument('-indexerhostnamefilter', help='Host names for the indexer servers for determining size on disk queries', default="*")
 
 #default as in the [default] entry appears in the btool output but requires no tuning
-parser.add_argument('-indexIgnoreList', help='List of indexes that tuning should not be attempted on. CSV separated list without spaces', default="_internal,_audit,_telemetry,_thefishbucket,_introspection,history,default,splunklogger")
+parser.add_argument('-indexIgnoreList', help='List of indexes that tuning should not be attempted on. CSV separated list without spaces', default="_internal,_audit,_telemetry,_thefishbucket,_introspection,history,default,splunklogger,notable_summary,ioc,threat_activity,endpoint_summary,whois,notable,risk,cim_modactions,cim_summary,xtreme_contexts")
 
 #What's the smallest index size we should go to, to avoid bucket explosion? At least maxHotBuckets*maxDataSize + some room? Hardcoded for now
 parser.add_argument('-lowerIndexSizeLimit', help='Minimum index size limit to avoid bucket explosion', default=3000, type=int)
@@ -154,8 +153,8 @@ parser.add_argument('-deadIndexCheck', help='Only use the utility to run the dea
 parser.add_argument('-deadIndexDelete', help='After running the dead index check perform an rm -R on the directories which appear to be no longer in use, use with caution', action='store_true')
 parser.add_argument('-doNotLoseData', help='By default the index sizing estimate overrides any attempt to prevent data loss, use this switch to provide extra storage to prevent data loss (free storage!)', action='store_true')
 parser.add_argument('-sizingEstimates', help='Only run sizing estimates (do not resize indexes)', action='store_true')
-parser.add_argument('-indexTuning', help='Only run index tuning (resize indexes + buckets)', action='store_true')
-parser.add_argument('-bucketTuning', help='Only run index tuning (resize buckets only)', action='store_true')
+parser.add_argument('-indexTuning', help='Run index tuning & bucket tuning (resize indexes + buckets)', action='store_true')
+parser.add_argument('-bucketTuning', help='Only run bucket tuning (resize buckets only)', action='store_true')
 parser.add_argument('-indexSizing', help='Only run index tuning (resize indexes only)', action='store_true')
 parser.add_argument('-all', help='Run index sizing and sizing estimates, along with a list of unused indexes', action='store_true')
 parser.add_argument('-useIntrospectionData', help='Use introspection data rather than the REST API data for index bucket calculations, slightly faster but earliest time may not be 100 percent accurate (data is likely older than logged)', action='store_true')
@@ -172,11 +171,13 @@ parser.add_argument('-outputTempFilesWithTuning', help='Output files into the wo
 #Skip indexes where the size on disk is greater than the estimated size (i.e. those who have serious balance issues or are exceeding usage expectations)
 parser.add_argument('-skipProblemIndexes', help='Skip re-sizing attempts on the index size for any index perceived as a problem (for example using more disk than expected or similar)', action='store_true')
 
-###############################
-#
-# Initial setup
-#
-###############################
+#helper function as per https://stackoverflow.com/questions/31433989/return-copy-of-dictionary-excluding-specified-keys
+def without_keys(d, keys):
+    return {x: d[x] for x in d if x not in keys}
+
+"""
+ Initial setup
+"""
 
 args = parser.parse_args()
 
@@ -195,10 +196,6 @@ if args.all:
 if args.indexTuning:
     args.bucketTuning = True
     args.indexSizing = True
-
-#helper function as per https://stackoverflow.com/questions/31433989/return-copy-of-dictionary-excluding-specified-keys
-def without_keys(d, keys):
-    return {x: d[x] for x in d if x not in keys}
 
 #Keep a large dictionary of the indexes and associated information
 indexList = {}
@@ -223,29 +220,27 @@ excludedList = [ "password", "gitLabToken" ]
 cleanArgs = without_keys(vars(args), excludedList)
 logger.info("Begin index sizing script with args %s" % (cleanArgs))
 
-###############################
-#
-# Check for directories on the filesystem that do not appear to be related to any index
-#
-###############################
-#Determine locations that exist on the filesystem, and if they don't exist in the list from the btool output
-#they are likely dead index directories from indexes that were once here but now removed
-#TODO this could be a function and moved outside the main code
-#Note this is here because later we modify the indexList to remove ignored indexes
-#where now we want them in the list to ensure we do not attempt to delete in use directories!
+"""
+ Check for directories on the filesystem that do not appear to be related to any index
 
-#the checkdirs function returns the top level directories from the indexes.conf which we should be checking, for example /opt/splunk/var/lib/splunk
-#Should not be passing around objects but this will do for now
-#TODO fix this
+ Determine locations that exist on the filesystem, and if they don't exist in the list from the btool output
+ they are likely dead index directories from indexes that were once here but now removed
+ TODO this could be a function and moved outside the main code
+ Note this is here because later we modify the indexList to remove ignored indexes
+ where now we want them in the list to ensure we do not attempt to delete in use directories!
+
+ the checkdirs function returns the top level directories from the indexes.conf which we should be checking, for example /opt/splunk/var/lib/splunk
+ Should not be passing around objects but this will do for now
+"""
+
 indexDirCheckRes = False
 if args.deadIndexCheck:
     indexDirCheckRes = indextuning_dirchecker.checkForDeadDirs(indexList, volList, args.excludedDirs, utility, logging)
     
-###############################
-#
-# Begin main logic section
-#
-###############################
+"""
+ Begin main logic section
+"""
+
 #Shared functions required by both index tuning/sizing & bucket tuning/sizing
 def indexTuningPresteps(utility, indexList, indexIgnoreList, earliestLicense, latestLicense, indexNameRestriction, indexLimit, indexerhostnamefilter, useIntrospectionData):
     confFilesToCheck = {}
@@ -390,45 +385,44 @@ def runBucketSizing(utility, indexList, indexNameRestriction, indexLimit, numHou
         #If we didn't auto tune the bucket and it's a lot smaller or bigger than we change the values to the new numbers
         if bucketSize.find("auto") == -1:
             logger.warn("Not an auto sized bucket for index: " + indexName + " this index should probably be excluded from sizing")
-        #We are using auto-tuned bucket size'es so let's keep this using an auto value
-        else:
-            #It is an auto sized bucket, this makes it slightly different
-            logger.debug("Auto sized bucket for index: %s with size %s" % (indexName, bucketSize)) 
-            end = bucketSize.find("_")
-            #With auto sized buckets we probably care more when the buckets are too small rather than too large (for now)
-            bucketAutoSize = float(bucketSize[0:end])
-            percDiff = (100 / bucketAutoSize)*recommendedBucketSize
-            #If we expect to exceed the auto size in use, go to the auto_high_volume setting, assuming we are not already there
-            if (percDiff > 100 and not bucketSize == "10240_auto"):
-                homePathMaxDataSizeMB = indexList[indexName]['homePathMaxDataSizeMB']
-                
-                logger.debug("homepath size is %s and auto_high_volume_sizeMB * maxHotBuckets is %s and %s or maxTotal %s" % (homePathMaxDataSizeMB, auto_high_volume_sizeMB* maxHotBuckets, homePathMaxDataSizeMB, maxTotalDataSizeMB))
-                if homePathMaxDataSizeMB != 0.0 and (auto_high_volume_sizeMB * maxHotBuckets) > homePathMaxDataSizeMB:
-                    logger.warn("Index: %s would require a auto_high_volume (10GB) bucket but the homePathMaxDataSizeMB of size %s cannot fit %s buckets of that size, not changing the bucket sizing" % (indexName, homePathMaxDataSizeMB, maxHotBuckets))
-                elif homePathMaxDataSizeMB == 0.0 and (auto_high_volume_sizeMB * maxHotBuckets) > maxTotalDataSizeMB:
-                    logger.warn("Index: %s would require a auto_high_volume (10GB) bucket but the maxTotalDataSizeMB of size %s cannot fit %s buckets of that size, not changing the bucket sizing" % (indexName, maxTotalDataSizeMB, maxHotBuckets))
-                else:
-                    requiresChange = "bucket" 
-                    #If we don't have any change comments so far create the dictionary
-                    if (not indexList[indexName].has_key('changeComment')):
-                        indexList[indexName]['changeComment'] = {}
-                    #Write comments into the output files so we know what tuning occured and when
-                    indexList[indexName]['changeComment']['bucket'] = "# Bucket size increase required estimated %s, auto-tuned on %s\n" % (indexList[indexName]["numberRecBucketSize"], todaysDate)
-                    #Simplify to auto_high_volume
-                    indexList[indexName]['recBucketSize'] = "auto_high_volume"
-                    logger.info("Index: %s , file %s , current bucket size is auto tuned to %s , calculated bucket size %s (will be set to auto_high_volume (size increase)), maxHotBuckets %s" % (indexName, confFile, bucketSize, recommendedBucketSize, maxHotBuckets))
+            continue
+        #It is an auto sized bucket, this makes it slightly different
+        logger.debug("Auto sized bucket for index: %s with size %s" % (indexName, bucketSize)) 
+        end = bucketSize.find("_")
+        #With auto sized buckets we probably care more when the buckets are too small rather than too large (for now)
+        bucketAutoSize = float(bucketSize[0:end])
+        percDiff = (100 / bucketAutoSize)*recommendedBucketSize
+        #If we expect to exceed the auto size in use, go to the auto_high_volume setting, assuming we are not already there
+        if (percDiff > 100 and not bucketSize == "10240_auto"):
+            homePathMaxDataSizeMB = indexList[indexName]['homePathMaxDataSizeMB']
+            
+            logger.debug("homepath size is %s and auto_high_volume_sizeMB * maxHotBuckets is %s and %s or maxTotal %s" % (homePathMaxDataSizeMB, auto_high_volume_sizeMB* maxHotBuckets, homePathMaxDataSizeMB, maxTotalDataSizeMB))
+            if homePathMaxDataSizeMB != 0.0 and (auto_high_volume_sizeMB * maxHotBuckets) > homePathMaxDataSizeMB:
+                logger.warn("Index: %s would require a auto_high_volume (10GB) bucket but the homePathMaxDataSizeMB of size %s cannot fit %s buckets of that size, not changing the bucket sizing" % (indexName, homePathMaxDataSizeMB, maxHotBuckets))
+            elif homePathMaxDataSizeMB == 0.0 and (auto_high_volume_sizeMB * maxHotBuckets) > maxTotalDataSizeMB:
+                logger.warn("Index: %s would require a auto_high_volume (10GB) bucket but the maxTotalDataSizeMB of size %s cannot fit %s buckets of that size, not changing the bucket sizing" % (indexName, maxTotalDataSizeMB, maxHotBuckets))
             else:
-                #Bucket is smaller than current sizing, is it below the auto 750MB default or not, and is it currently set to a larger value?
-                if (recommendedBucketSize < 750 and bucketAutoSize > 750):
-                    requiresChange = "bucket" 
-                    #If we don't have any change comments so far create the dictionary
-                    if (not indexList[indexName].has_key('changeComment')):
-                        indexList[indexName]['changeComment'] = {}
-                        
-                    #Write comments into the output files so we know what tuning occured and when
-                    indexList[indexName]['changeComment']['bucket'] = "# Bucket size decrease required estimated %s, auto-tuned on %s\n" % (indexList[indexName]["numberRecBucketSize"], todaysDate)
-                    indexList[indexName]['recBucketSize'] = "auto"
-                    logger.info("Index: %s , file %s , current bucket size is auto tuned to %s , calculated bucket size %s (will be set to auto (size decrease)), maxHotBuckets %s" % (indexName, confFile, bucketSize, recommendedBucketSize, maxHotBuckets))
+                requiresChange = "bucket" 
+                #If we don't have any change comments so far create the dictionary
+                if (not indexList[indexName].has_key('changeComment')):
+                    indexList[indexName]['changeComment'] = {}
+                #Write comments into the output files so we know what tuning occured and when
+                indexList[indexName]['changeComment']['bucket'] = "# Bucket size increase required estimated %s, auto-tuned on %s\n" % (indexList[indexName]["numberRecBucketSize"], todaysDate)
+                #Simplify to auto_high_volume
+                indexList[indexName]['recBucketSize'] = "auto_high_volume"
+                logger.info("Index: %s , file %s , current bucket size is auto tuned to %s , calculated bucket size %s (will be set to auto_high_volume (size increase)), maxHotBuckets %s" % (indexName, confFile, bucketSize, recommendedBucketSize, maxHotBuckets))
+        else:
+            #Bucket is smaller than current sizing, is it below the auto 750MB default or not, and is it currently set to a larger value?
+            if (recommendedBucketSize < 750 and bucketAutoSize > 750):
+                requiresChange = "bucket" 
+                #If we don't have any change comments so far create the dictionary
+                if (not indexList[indexName].has_key('changeComment')):
+                    indexList[indexName]['changeComment'] = {}
+                    
+                #Write comments into the output files so we know what tuning occured and when
+                indexList[indexName]['changeComment']['bucket'] = "# Bucket size decrease required estimated %s, auto-tuned on %s\n" % (indexList[indexName]["numberRecBucketSize"], todaysDate)
+                indexList[indexName]['recBucketSize'] = "auto"
+                logger.info("Index: %s , file %s , current bucket size is auto tuned to %s , calculated bucket size %s (will be set to auto (size decrease)), maxHotBuckets %s" % (indexName, confFile, bucketSize, recommendedBucketSize, maxHotBuckets))
                     
         #If this index requires change we record this for later
         if (requiresChange != False):
@@ -442,7 +436,6 @@ def runBucketSizing(utility, indexList, indexNameRestriction, indexLimit, numHou
 
     return indexesRequiringChanges, confFilesRequiringChanges
 
-#Determine which conf files should be read...
 def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberOfIndexers, lowerIndexSizeLimit, sizingContingency, minimumDaysOfLicenseForSizing, percBeforeAdjustment, doNotLoseData, undersizingContingency, smallBucketSize, skipProblemIndexes, indexesRequiringChanges, confFilesRequiringChanges):
     todaysDate = datetime.datetime.now().strftime("%Y-%m-%d")
 
@@ -468,11 +461,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
             break
         counter = counter + 1
         
-        #maxHotBuckets = indexList[indexName]['maxHotBuckets']
-        #bucketSize = indexList[indexName]['maxDataSize']
         confFile = indexList[indexName]['confFile']
-        #recommendedBucketSize = indexList[indexName]['recBucketSize']
-        #indexList[indexName]['numberRecBucketSize'] = indexList[indexName]['recBucketSize']
         storageRatio = indexList[indexName]["compRatio"] 
         curMaxTotalSize = indexList[indexName]["curMaxTotalSize"]
         earliestTime = indexList[indexName]["earliestTime"]
@@ -480,14 +469,14 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
         frozenTimePeriodInDays = int(indexList[indexName]['frozenTimePeriodInSecs'])/60/60/24
         maxTotalDataSizeMB = float(indexList[indexName]['maxTotalDataSizeMB'])
         avgLicenseUsagePerDay = indexList[indexName]['avgLicenseUsagePerDay']
-
+        licenseDataFirstSeen = indexList[indexName]["firstSeen"]
+        
         #Company specific field here, the commented size per day in the indexes.conf file
         configuredSizePerDay = -1
         if (indexList[indexName].has_key("sizePerDayInMB")):
             configuredSizePerDay = int(indexList[indexName]["sizePerDayInMB"])
 
         oversized = False
-        calcSize = False
         estimatedDaysForCurrentSize = 0
         #calculate the index size usage based on recent license usage data and divide by the number of indexers we have
         calcSize = (storageRatio * avgLicenseUsagePerDay * frozenTimePeriodInDays)/numberOfIndexers
@@ -503,7 +492,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
             #If it had a configured size it's dealt with later in the code
             if (configuredSizePerDay < 0):
                 #ensure that our new sizing does not drop below what we already have on disk
-                largestOnDiskSize = float(indexList[indexName]["curMaxTotalSize"])
+                largestOnDiskSize = float(curMaxTotalSize)
                 #add the contingency calculation in as we don't want to size to the point where we drop data once we apply on any of the indexers
                 largestOnDiskSize = int(round(largestOnDiskSize * sizingContingency))
                 #This now becomes our tuned size
@@ -537,8 +526,6 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
         #Add our calculated size back in for later, int just in case the lowerIndexSizeLimit is a float
         indexList[indexName]['calcMaxTotalDataSizeMB'] = int(round(calcSize))
         
-        licenseDataFirstSeen = indexList[indexName]["firstSeen"]
-        
         #This flag is set if the index is undersized on purpose (i.e. we have a setting that says to set it below the limit where we lose data
         donotIncrease = False
         
@@ -567,7 +554,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
             elif (licenseDataFirstSeen < minimumDaysOfLicenseForSizing):
                 oversized = False
             else:
-                #size estimate on disk based on the compression ratio we have seen, and the the estimated size in the config file            
+                #size estimate on disk based on the compression ratio we have seen, and the the configured size in the config file
                 sizeEst = (configuredSizePerDay * storageRatio * frozenTimePeriodInDays)/numberOfIndexers
                 #including contingency
                 sizeEst = sizeEst * sizingContingency
@@ -579,31 +566,29 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                 usageBasedCalculatedSize = indexList[indexName]['calcMaxTotalDataSizeMB']
                 #If the sizing was previously decided during a sizing discussion, then allocate the requested size
                 indexList[indexName]['calcMaxTotalDataSizeMB'] = int(round(sizeEst))
-                newCalcMaxTotalDataSizeMB = indexList[indexName]['calcMaxTotalDataSizeMB']
+                configuredSizeFromCommentMaxTotalDSMB = indexList[indexName]['calcMaxTotalDataSizeMB']
                 logger.debug("Index: %s, based on previous calculations the maxTotalDataSizeMB required is %sMB, however sizing comment is %sMB/day so re-calculated maxTotalDataSizeMB as %sMB, oldest data found is %s days old" % (indexName, usageBasedCalculatedSize, configuredSizePerDay, indexList[indexName]['calcMaxTotalDataSizeMB'], earliestTime))
 
                 #Skip the zero size estimated where storageRatio == 0.0 or license usage is zero
                 if (storageRatio != 0.0 and avgLicenseUsagePerDay != 0):
-                  #estimatedDaysForCurrentSize = int(round(newCalcMaxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * undersizingContingency)/numberOfIndexers)))
-                    estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * undersizingContingency)/numberOfIndexers)))
+                    estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * sizingContingency)/numberOfIndexers)))
                 
                 #If the commented size would result in data loss or an undersized index and we have a comment about this it's ok to keep it undersized
-                if (usageBasedCalculatedSize > newCalcMaxTotalDataSizeMB):
+                if (usageBasedCalculatedSize > configuredSizeFromCommentMaxTotalDSMB):
                     if doNotLoseData:
                         indexList[indexName]['calcMaxTotalDataSizeMB'] = usageBasedCalculatedSize
                         logger.info("Index: %s has more data than expected and has a comment-based sizing estimate of %s however average is %s, current size would fit %s days, frozenTimeInDays %s, increasing the size of this index, oldest data found is %s days old" % (indexName, configuredSizePerDay, avgLicenseUsagePerDay, estimatedDaysForCurrentSize, frozenTimePeriodInDays, earliestTime))
                     else:
                         logger.warn("Index: %s has more data than expected and has a comment-based sizing estimate of %s however average is %s, data loss is likely after %s days, frozenTimeInDays %s, oldest data found is %s days old" % (indexName, configuredSizePerDay, avgLicenseUsagePerDay, estimatedDaysForCurrentSize, frozenTimePeriodInDays, earliestTime))
-                        #donotIncrease = True
                 #If the newly calculated size has increased compared to previous size multiplied by the undersizing contingency
                 elif (estimatedDaysForCurrentSize < frozenTimePeriodInDays):
                     #We will increase the sizing for this index
                     logger.info("Index: %s requires more sizing currently %s new sizing %s, commentedSizePerDay %s, frozenTimeInDays %s, average usage per day %s, oldest data found is %s days old" % (indexName, maxTotalDataSizeMB, newCalcMaxTotalDataSizeMB, configuredSizePerDay, frozenTimePeriodInDays, avgLicenseUsagePerDay, earliestTime))
 
                 #At some point this index was manually sized to be bigger than the comment, fix it now, this may drop it below the expected frozen time period in days
-                if (maxTotalDataSizeMB > newCalcMaxTotalDataSizeMB):
+                if (maxTotalDataSizeMB > configuredSizeFromCommentMaxTotalDSMB):
                     #Determine the % difference between the new estimate and the previous maxTotalDataSizeMB= setting
-                    percEst = newCalcMaxTotalDataSizeMB / maxTotalDataSizeMB
+                    percEst = configuredSizeFromCommentMaxTotalDSMB / maxTotalDataSizeMB
                     logger.debug("perc est %s based on %s %s %s %s and max total %s" % (percEst, configuredSizePerDay, storageRatio, frozenTimePeriodInDays, numberOfIndexers, maxTotalDataSizeMB))
                     #If we are below the threshold where we adjust take action
                     if (percEst < percBeforeAdjustment):
@@ -617,6 +602,8 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                             logger.info("Index: %s comment-based sizing estimate of %s, %s comp ratio perc, current size of %s, new size estimate of %s, frozenTimeInDays %s, estimated days %s, average usage per day %s, this index will be decreased in size, oldest data found is %s days old" % (indexName, configuredSizePerDay, storageRatio, maxTotalDataSizeMB, newCalcMaxTotalDataSizeMB, frozenTimePeriodInDays, estimatedDaysForCurrentSize, avgLicenseUsagePerDay, earliestTime))
           
         requiresChange = False
+        #Deal with the fact that bucket sizing changes may be occurring to these indexes
+        #therefore set the requiresChange status if it exists...        
         if indexName in indexesRequiringChanges:
             requiresChange = indexesRequiringChanges[indexName]
             logger.debug("indexName: %s requires change set to %s" % (indexName, requiresChange))
@@ -624,18 +611,26 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
         #If the estimates show we cannot store the expected frozenTimePeriodInDays on disk we need to take action
         #this is an undersized scenario and we need a larger size unless of course we have already capped the index at this size and data loss is expected
         if (estimatedDaysForCurrentSize < frozenTimePeriodInDays and not donotIncrease):
+            logger.info("Index: %s, has less storage than the frozen time period in days, estimatedDaysForCurrentSize: %s, frozenTimePeriodInDays: %s" % (indexName, estimatedDaysForCurrentSize, frozenTimePeriodInDays))
             #TODO if (configuredSizePerDay != "N/A") do we still increase an undersized index or let it get frozen anyway because the disk estimates were invalid?!
             #also the above would be assuming that the disk estimates were based on the indexers we have now configured
             #for now assuming we always want to increase and prevent data loss...
             
-            #If we appear to be undersized but we don't have enough data yet
-            if (licenseDataFirstSeen < minimumDaysOfLicenseForSizing):
+            if (maxTotalDataSizeMB == indexList[indexName]['calcMaxTotalDataSizeMB']):
+                logger.info("Index: %s, current size of %s is the new calculated size, therefore no changes required here" % (indexName, maxTotalDataSizeMB))
+            #If we appear to be undersized but we don't have enough data yet            
+            elif (licenseDataFirstSeen < minimumDaysOfLicenseForSizing):
                 logger.info("Index: %s appears to be undersized but has %s days of license data, minimum days for sizing is %s, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, earliestTime is %s" % (indexName, licenseDataFirstSeen, minimumDaysOfLicenseForSizing, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, earliestTime))
             #If we have enough data and we're doing a bucket size adjustment we are now also doing the index sizing adjustment
             elif (requiresChange != False and oversized != True):
-                requiresChange = requiresChange + "_sizing"
-                #Write comments into the output files so we know what tuning occured and when
-                indexList[indexName]['changeComment']['sizing'] = "# maxTotalDataSizeMB previously %s, auto-tuned on %s\n" % (indexList[indexName]['maxTotalDataSizeMB'], todaysDate)
+            
+                adjustIfAbove = maxTotalDataSizeMB * undersizingContingency
+                if indexList[indexName]['calcMaxTotalDataSizeMB'] > adjustIfAbove:
+                    requiresChange = requiresChange + "_sizing"
+                    #Write comments into the output files so we know what tuning occured and when
+                    indexList[indexName]['changeComment']['sizing'] = "# maxTotalDataSizeMB previously %s, auto-tuned on %s\n" % (maxTotalDataSizeMB, todaysDate)
+                else:
+                    logger.info("Index: %s, (bucket & index sizing), index is undersized however an adjustment is only going to occur once the newly calculated size is above %s, currently it is %s" % (indexName, adjustIfAbove, indexList[indexName]['calcMaxTotalDataSizeMB']))
             #We need to do an index sizing adjustment
             else:
                 #If we previously said the index was oversized, but it is undersized, this can only happen when the comment advising the size is exceeded by the size of the data
@@ -645,14 +640,17 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                     logger.info("Index: %s undersized but has %s days of license data *but* index sizing comment advises index oversized, increasing size, minimum days for sizing is %s, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, earliestTime is %s" % (indexName, licenseDataFirstSeen, minimumDaysOfLicenseForSizing, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, earliestTime))
                     oversized = False
                     
-                requiresChange = "sizing"
-                if (not indexList[indexName].has_key('changeComment')):
-                    indexList[indexName]['changeComment'] = {}
+                adjustIfAbove = maxTotalDataSizeMB * undersizingContingency
+                if indexList[indexName]['calcMaxTotalDataSizeMB'] > adjustIfAbove:
+                    requiresChange = "sizing"
+                    if (not indexList[indexName].has_key('changeComment')):
+                        indexList[indexName]['changeComment'] = {}
                 
-                #Write comments into the output files so we know what tuning occured and when
-                str = "# maxTotalDataSizeMB previously %s, had room for %s days, auto-tuned on %s\n" % (indexList[indexName]['maxTotalDataSizeMB'], estimatedDaysForCurrentSize, todaysDate)
-                indexList[indexName]['changeComment']['sizing'] = str
-
+                    #Write comments into the output files so we know what tuning occured and when
+                    str = "# maxTotalDataSizeMB previously %s, had room for %s days, auto-tuned on %s\n" % (indexList[indexName]['maxTotalDataSizeMB'], estimatedDaysForCurrentSize, todaysDate)
+                    indexList[indexName]['changeComment']['sizing'] = str
+                else:
+                    logger.info("Index: %s, (index sizing only) is undersized however an adjustment is only going to occur once the newly calculated size is above %s, currently it is %s" % (indexName, adjustIfAbove, indexList[indexName]['calcMaxTotalDataSizeMB']))
             #Record this in our tuning log
             logger.info("Index: %s undersized, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, license data first seen %s days ago, earliestTime is %s" % (indexName, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, licenseDataFirstSeen, earliestTime))
 
@@ -986,16 +984,16 @@ if indexDirCheckRes:
     if (len(deadHotDirs.keys()) > 0 and not args.deadIndexDelete):
         for line in deadHotDirs.keys():
             for entry in deadHotDirs[line]:
-                print entry + "/" + line
+                print(entry + "/" + line)
 
     if (len(deadColdDirs.keys()) > 0 and not args.deadIndexDelete):
         for line in deadColdDirs.keys():
             for entry in deadColdDirs[line]:
-                print entry + "/" + line
+                print(entry + "/" + line)
 
     if (len(summariesDirsDead.keys()) > 0 and not args.deadIndexDelete):
         for line in summariesDirsDead.keys():
             for entry in summariesDirsDead[line]:
-                print entry + "/" + line
+                print(entry + "/" + line)
 
 logger.info("End index sizing script" % (cleanArgs))
