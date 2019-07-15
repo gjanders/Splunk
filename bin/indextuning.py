@@ -920,13 +920,15 @@ if indexDirCheckRes:
         logger.info("The below list were located in the above directories but no mention in the btool output, these should likely be removed from the filesystem:")
         for line in deadHotDirs.keys():
             for entry in deadHotDirs[line]:
+                #We escaped spaces for the shell, but we do not want spaces escaped for python
+                line = line.replace('\\ ',' ')          
                 thedir = entry + "/" + line
                 if args.deadIndexDelete and not line == "\\$_index_name":
                     if os.path.isdir(thedir):
                         logger.info("Wiping directory %s" % (thedir))
                         shutil.rmtree(thedir)
                     else:
-                        logger.warn("Directory does not exist, no deletion required")
+                        logger.warn("Directory '%s' does not exist, no deletion required" % (thedir))
                 else:
                     logger.info(thedir)
     else:
@@ -938,13 +940,15 @@ if indexDirCheckRes:
         logger.info("The below list were located in the above directories but no mention in the btool output, these should likely be removed from the filesystem:")
         for line in deadColdDirs.keys():
             for entry in deadColdDirs[line]:
+                #We escaped spaces for the shell, but we do not want spaces escaped for python
+                line = line.replace('\\ ',' ')          
                 thedir = entry + "/" + line
                 if args.deadIndexDelete and not line == "\\$_index_name":
                     if os.path.isdir(thedir):
                         logger.info("Wiping directory %s" % (thedir))
                         shutil.rmtree(thedir)
                     else:
-                        logger.warn("Directory does not exist, no deletion required")
+                        logger.warn("Directory '%s' does not exist, no deletion required" % (thedir))
                 else:
                     logger.info(thedir)
     else:
@@ -956,13 +960,15 @@ if indexDirCheckRes:
         logger.info("The below list were located in the above directories but no mention in the btool output, these should likely be removed from the filesystem:")
         for line in summariesDirsDead.keys():
             for entry in summariesDirsDead[line]:
+                #We escaped spaces for the shell, but we do not want spaces escaped for python
+                line = line.replace('\\ ',' ')          
                 thedir = entry + "/" + line
                 if args.deadIndexDelete and not line == "\\$_index_name":
                     if os.path.isdir(thedir):
                         logger.info("Wiping directory %s" % (thedir))
                         shutil.rmtree(thedir)
                     else:
-                        logger.warn("Directory does not exist, no deletion required")
+                        logger.warn("Directory '%s' does not exist, no deletion required" % (thedir))
                 else:
                     logger.info(thedir)
     else:
