@@ -1,4 +1,5 @@
 from __future__ import print_function
+import re
 import getpass
 import sys
 import os
@@ -11,6 +12,8 @@ import argparse
 import logging
 from logging.config import dictConfig
 import requests
+from requests.auth import HTTPBasicAuth
+import json
 
 """
 What does this script do?
@@ -51,6 +54,16 @@ What does this script do?
      note that this particular scenario can result in the index becoming larger than the original sizing comment, it is assumed that data loss should be avoided by the script
    * Finally if oversized we sanity check that we are not dropping below the largest on-disk size * contingency on any indexer as that would result in deletion of data
 
+ sizingEstimates mode
+    * Checking maxTotalDataSizeMB of each index, and the size of the volumes set in Splunk, determine if we have over-allocated based
+      on the worst case usage scenario that all maxTotalDataSizeMB is in use
+    * If index tuning is occurring and this switch is passed a more accurate estimate of index sizing is provided
+
+ deadIndexCheck mode
+    * Check the relevant Splunk directories for index storage and determine if there are directories in these locations that no longer map to an index stanza in the config
+    this commonly happens when an index is renamed leaving extra directories on the filesystem that will never delete themselves
+    * Unless the deadIndexDelete flag is also passed in this will not actually delete any files, it will provide a listing of what appears to be extra files    
+    
  TODO an indexes datatype can be event or metric, if metric do we do the same tuning? 
  Since dbinspect appears to work along with other queries assuming they can be treated the same for now...
 """
@@ -118,9 +131,6 @@ parser.add_argument('-undersizingContingency', help='Contingency multiplier befo
 #What host= filter do we use to find index on-disk sizing information for the compression ratio?
 parser.add_argument('-indexerhostnamefilter', help='Host names for the indexer servers for determining size on disk queries', default="*")
 
-#default as in the [default] entry appears in the btool output but requires no tuning
-parser.add_argument('-indexIgnoreList', help='List of indexes that tuning should not be attempted on. CSV separated list without spaces', default="_internal,_audit,_telemetry,_thefishbucket,_introspection,history,default,splunklogger,notable_summary,ioc,threat_activity,endpoint_summary,whois,notable,risk,cim_modactions,cim_summary,xtreme_contexts")
-
 #What's the smallest index size we should go to, to avoid bucket explosion? At least maxHotBuckets*maxDataSize + some room? Hardcoded for now
 parser.add_argument('-lowerIndexSizeLimit', help='Minimum index size limit to avoid bucket explosion', default=3000, type=int)
 
@@ -185,17 +195,30 @@ args = parser.parse_args()
 if not args.debugMode:
     logging.getLogger().setLevel(logging.INFO)
 
-args.indexIgnoreList = args.indexIgnoreList.split(",")
 args.excludedDirs = args.excludedDirs.split(",")
 
 if args.all:
     args.sizingEstimates = True
     args.indexTuning = True
     args.deadIndexCheck = True
-    
+
 if args.indexTuning:
     args.bucketTuning = True
     args.indexSizing = True
+
+if args.bucketTuning or args.indexSizing:
+    indexIgnoreURL = 'https://' + args.destURL + '/servicesNS/nobody/search/storage/collections/data/index_tuning_exclusion_list'
+    logger.debug("Attempting to obtain index ignore list via rest call to %s" % (indexIgnoreURL))
+    res = requests.get(indexIgnoreURL, verify=False, auth=HTTPBasicAuth(args.username, args.password))
+
+    if (res.status_code != requests.codes.ok):
+        logger.fatal("Failure to obtain indexIgnore list on URL %s in status code %s reason %s, response: '%s'" % (indexIgnoreURL, res.status_code, res.reason, res.text))
+        sys.exit(-1)
+
+    logger.debug("Response: %s" % (res.text))
+    indexIgnoreJSON = json.loads(res.text)
+    indexIgnoreList = [ item['index'] for item in indexIgnoreJSON ]
+    logger.info("Index ignore list is: %s" % (indexIgnoreList))
 
 #Keep a large dictionary of the indexes and associated information
 indexList = {}
@@ -237,6 +260,10 @@ indexDirCheckRes = False
 if args.deadIndexCheck:
     indexDirCheckRes = indextuning_dirchecker.checkForDeadDirs(indexList, volList, args.excludedDirs, utility, logging)
     
+#We need to ignore these indexes for re-sizing purposes
+#but we need the details of these indexes for sizing estimates done later...
+ignoredIndexesList = {}
+
 """
  Begin main logic section
 """
@@ -257,15 +284,6 @@ def indexTuningPresteps(utility, indexList, indexIgnoreList, earliestLicense, la
     #This just updates the indexList dictionary with new data
     utility.parseConfFilesForSizingComments(indexList, confFilesToCheck)
     
-    #At this point we have indexes that we are supposed to ignore in the dictionary, we need them there so we could 
-    #ensure that we didn't suggest deleting them from the filesystem, however now we can ignore them so we do not
-    #attempt to re-size the indexes with no license info available
-    logger.debug("The following indexes will be ignored as per configuration %s" % (indexIgnoreList))
-    for index in indexIgnoreList:
-        if indexList.has_key(index):
-            del indexList[index]
-            logger.debug("Removing index %s from indexList" % (index))
-            
     counter = 0
     indexCount = len(indexList)
 
@@ -277,6 +295,7 @@ def indexTuningPresteps(utility, indexList, indexIgnoreList, earliestLicense, la
         if indexNameRestriction:
             if indexName != indexNameRestriction:
                 continue
+        
         #useful for manual runs
         logger.debug("%s iteration of %s within indexLoop" % (counter, indexCount))
         
@@ -294,6 +313,24 @@ def indexTuningPresteps(utility, indexList, indexIgnoreList, earliestLicense, la
         indexList[indexName]["compRatio"], indexList[indexName]["curMaxTotalSize"], indexList[indexName]["earliestTime"] = utility.determineCompressionRatio(indexName, indexerhostnamefilter, useIntrospectionData)
 
         counter = counter + 1
+        
+    #At this point we have indexes that we are supposed to ignore in the dictionary, we need them there so we could 
+    #ensure that we didn't suggest deleting them from the filesystem, however now we can ignore them so we do not
+    #attempt to re-size the indexes with no license info available
+    logger.debug("The following indexes will be ignored as per configuration %s" % (indexIgnoreList))
+    for index in indexIgnoreList:
+        if indexList.has_key(index):
+            ignoredIndexesList[index] = indexList[index]
+            del indexList[index]
+            logger.debug("Removing index %s from indexList" % (index))
+            
+    #Metric indexes are excluded from tuning at this stage
+    #for indexName in indexList.keys():
+    #    datatype = indexList[indexName]['datatype']
+    #    if datatype != 'event':
+    #        logger.info("Index %s is excluded from tuning due to not been of type events, type is %s" % (indexName, datatype))
+    #        ignoredIndexesList[indexName] = indexList[indexName]
+    #        del indexList[indexName]
 
 #Functions exlusive to bucket sizing
 def runBucketSizing(utility, indexList, indexNameRestriction, indexLimit, numHoursPerBucket, bucketContingency, upperCompRatioLevel, minSizeToCalculate, numberOfIndexers):
@@ -392,6 +429,7 @@ def runBucketSizing(utility, indexList, indexNameRestriction, indexLimit, numHou
         #With auto sized buckets we probably care more when the buckets are too small rather than too large (for now)
         bucketAutoSize = float(bucketSize[0:end])
         percDiff = (100 / bucketAutoSize)*recommendedBucketSize
+
         #If we expect to exceed the auto size in use, go to the auto_high_volume setting, assuming we are not already there
         if (percDiff > 100 and not bucketSize == "10240_auto"):
             homePathMaxDataSizeMB = indexList[indexName]['homePathMaxDataSizeMB']
@@ -406,11 +444,12 @@ def runBucketSizing(utility, indexList, indexNameRestriction, indexLimit, numHou
                 #If we don't have any change comments so far create the dictionary
                 if (not indexList[indexName].has_key('changeComment')):
                     indexList[indexName]['changeComment'] = {}
+
                 #Write comments into the output files so we know what tuning occured and when
                 indexList[indexName]['changeComment']['bucket'] = "# Bucket size increase required estimated %s, auto-tuned on %s\n" % (indexList[indexName]["numberRecBucketSize"], todaysDate)
                 #Simplify to auto_high_volume
                 indexList[indexName]['recBucketSize'] = "auto_high_volume"
-                logger.info("Index: %s , file %s , current bucket size is auto tuned to %s , calculated bucket size %s (will be set to auto_high_volume (size increase)), maxHotBuckets %s" % (indexName, confFile, bucketSize, recommendedBucketSize, maxHotBuckets))
+                logger.info("Index: %s, file %s, current bucket size is auto tuned to %s, calculated bucket size %s (will be set to auto_high_volume (size increase)), maxHotBuckets %s" % (indexName, confFile, bucketSize, recommendedBucketSize, maxHotBuckets))
         else:
             #Bucket is smaller than current sizing, is it below the auto 750MB default or not, and is it currently set to a larger value?
             if (recommendedBucketSize < 750 and bucketAutoSize > 750):
@@ -510,7 +549,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
             if storageRatio == 0.0:
                 estimatedDaysForCurrentSize = frozenTimePeriodInDays
             else:
-                estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * undersizingContingency)/numberOfIndexers)))
+                estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * sizingContingency)/numberOfIndexers)))
             
         #We leave a bit of room spare just in case by adding a contingency sizing here
         calcSize = int(round(calcSize*sizingContingency))
@@ -580,10 +619,11 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                         logger.info("Index: %s has more data than expected and has a comment-based sizing estimate of %s however average is %s, current size would fit %s days, frozenTimeInDays %s, increasing the size of this index, oldest data found is %s days old" % (indexName, configuredSizePerDay, avgLicenseUsagePerDay, estimatedDaysForCurrentSize, frozenTimePeriodInDays, earliestTime))
                     else:
                         logger.warn("Index: %s has more data than expected and has a comment-based sizing estimate of %s however average is %s, data loss is likely after %s days, frozenTimeInDays %s, oldest data found is %s days old" % (indexName, configuredSizePerDay, avgLicenseUsagePerDay, estimatedDaysForCurrentSize, frozenTimePeriodInDays, earliestTime))
+                
                 #If the newly calculated size has increased compared to previous size multiplied by the undersizing contingency
                 elif (estimatedDaysForCurrentSize < frozenTimePeriodInDays):
                     #We will increase the sizing for this index
-                    logger.info("Index: %s requires more sizing currently %s new sizing %s, commentedSizePerDay %s, frozenTimeInDays %s, average usage per day %s, oldest data found is %s days old" % (indexName, maxTotalDataSizeMB, newCalcMaxTotalDataSizeMB, configuredSizePerDay, frozenTimePeriodInDays, avgLicenseUsagePerDay, earliestTime))
+                    logger.info("Index: %s requires more sizing currently %s new sizing %s, commentedSizePerDay %s, frozenTimeInDays %s, average usage per day %s, oldest data found is %s days old" % (indexName, maxTotalDataSizeMB, configuredSizeFromCommentMaxTotalDSMB, configuredSizePerDay, frozenTimePeriodInDays, avgLicenseUsagePerDay, earliestTime))
 
                 #At some point this index was manually sized to be bigger than the comment, fix it now, this may drop it below the expected frozen time period in days
                 if (maxTotalDataSizeMB > configuredSizeFromCommentMaxTotalDSMB):
@@ -597,20 +637,21 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                         
                         #We warn if we drop below the frozen time period in seconds and do not warn if we are staying above it
                         if (estimatedDaysForCurrentSize < frozenTimePeriodInDays):
-                            logger.warn("Index: %s comment-based sizing estimate of %s, %s comp ratio perc, current size of %s, new size estimate of %s, frozenTimeInDays %s, estimated days %s, average usage per day %s, this index will be decreased in size, oldest data found is %s days old" % (indexName, configuredSizePerDay, storageRatio, maxTotalDataSizeMB, newCalcMaxTotalDataSizeMB, frozenTimePeriodInDays, estimatedDaysForCurrentSize, avgLicenseUsagePerDay, earliestTime))
+                            logger.warn("Index: %s comment-based sizing estimate of %s, %s comp ratio perc, current size of %s, new size estimate of %s, frozenTimeInDays %s, estimated days %s, average usage per day %s, this index will be decreased in size, oldest data found is %s days old" % (indexName, configuredSizePerDay, storageRatio, maxTotalDataSizeMB, configuredSizeFromCommentMaxTotalDSMB, frozenTimePeriodInDays, estimatedDaysForCurrentSize, avgLicenseUsagePerDay, earliestTime))
                         else:
-                            logger.info("Index: %s comment-based sizing estimate of %s, %s comp ratio perc, current size of %s, new size estimate of %s, frozenTimeInDays %s, estimated days %s, average usage per day %s, this index will be decreased in size, oldest data found is %s days old" % (indexName, configuredSizePerDay, storageRatio, maxTotalDataSizeMB, newCalcMaxTotalDataSizeMB, frozenTimePeriodInDays, estimatedDaysForCurrentSize, avgLicenseUsagePerDay, earliestTime))
+                            logger.info("Index: %s comment-based sizing estimate of %s, %s comp ratio perc, current size of %s, new size estimate of %s, frozenTimeInDays %s, estimated days %s, average usage per day %s, this index will be decreased in size, oldest data found is %s days old" % (indexName, configuredSizePerDay, storageRatio, maxTotalDataSizeMB, configuredSizeFromCommentMaxTotalDSMB, frozenTimePeriodInDays, estimatedDaysForCurrentSize, avgLicenseUsagePerDay, earliestTime))
           
         requiresChange = False
+
         #Deal with the fact that bucket sizing changes may be occurring to these indexes
-        #therefore set the requiresChange status if it exists...        
+        #therefore set the requiresChange status if it exists...
         if indexName in indexesRequiringChanges:
             requiresChange = indexesRequiringChanges[indexName]
             logger.debug("indexName: %s requires change set to %s" % (indexName, requiresChange))
         
         #If the estimates show we cannot store the expected frozenTimePeriodInDays on disk we need to take action
         #this is an undersized scenario and we need a larger size unless of course we have already capped the index at this size and data loss is expected
-        if (estimatedDaysForCurrentSize < frozenTimePeriodInDays and not donotIncrease):
+        if (estimatedDaysForCurrentSize < frozenTimePeriodInDays and not donotIncrease):            
             logger.info("Index: %s, has less storage than the frozen time period in days, estimatedDaysForCurrentSize: %s, frozenTimePeriodInDays: %s" % (indexName, estimatedDaysForCurrentSize, frozenTimePeriodInDays))
             #TODO if (configuredSizePerDay != "N/A") do we still increase an undersized index or let it get frozen anyway because the disk estimates were invalid?!
             #also the above would be assuming that the disk estimates were based on the indexers we have now configured
@@ -782,11 +823,11 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
 
 #We may or may not want to run the entire complex tuning script
 if args.bucketTuning or args.indexSizing:
-    indexTuningPresteps(utility, indexList, args.indexIgnoreList, args.earliestLicense, args.latestLicense, args.indexNameRestriction, args.indexLimit, args.indexerhostnamefilter, args.useIntrospectionData)
+    indexTuningPresteps(utility, indexList, indexIgnoreList, args.earliestLicense, args.latestLicense, args.indexNameRestriction, args.indexLimit, args.indexerhostnamefilter, args.useIntrospectionData)
     
     indexesRequiringChanges = {}
     confFilesRequiringChanges = []
-    
+
     if args.bucketTuning:
         (indexesRequiringChanges, confFilesRequiringChanges) = runBucketSizing(utility, indexList, args.indexNameRestriction, args.indexLimit, args.numHoursPerBucket, args.bucketContingency, args.upperCompRatioLevel, args.minSizeToCalculate, args.numberOfIndexers)
 
@@ -822,7 +863,7 @@ if args.bucketTuning or args.indexSizing:
                         if res == False:
                             logger.warn("Unexpected failure while attempting to trust the remote git repo. stdout '%s', stderr '%s'" % (output, stderr))
                     
-                    (output, stderr, res) = utility.runOSProcess("cd %s; git clone %s" % (args.gitWorkingDir, args.gitRepoURL))
+                    (output, stderr, res) = utility.runOSProcess("cd %s; git clone %s" % (args.gitWorkingDir, args.gitRepoURL), timeout=120)
                     if res == False:
                         logger.warn("git clone failed for some reason...on url %s stdout '%s', stderr '%s'" % (args.gitRepoURL, output, stderr))
                 else:
@@ -831,7 +872,7 @@ if args.bucketTuning or args.indexSizing:
             else:
                 if not os.path.isdir(args.gitWorkingDir):
                     os.makedirs(args.gitWorkingDir)
-                (output, stderr, res) = utility.runOSProcess("cd %s; git clone %s" % (args.gitWorkingDir, args.gitRepoURL))
+                (output, stderr, res) = utility.runOSProcess("cd %s; git clone %s" % (args.gitWorkingDir, args.gitRepoURL), timeout=120)
                 if res == False:
                     logger.warn("git clone failed for some reason...on url %s, output is '%s', stderr is '%s'" % (args.gitRepoURL, output, stderr))
             
@@ -853,10 +894,10 @@ if args.bucketTuning or args.indexSizing:
                     if res == False:
                         logger.warn("Unexpected failure while attempting to trust the remote git repo. stdout '%s', stderr '%s'" % (output, stderr))
 
-                (output, stderr, res) = utility.runOSProcess("cd %s; git clone %s" % (args.gitWorkingDir, args.gitRepoURL))
+                (output, stderr, res) = utility.runOSProcess("cd %s; git clone %s" % (args.gitWorkingDir, args.gitRepoURL), timeout=120)
                 if res == False:
                     logger.warn("git clone failed for some reason...on url %s stdout '%s', stderr '%s'" % (args.gitRepoURL, output, stderr))
-            
+
             #At this point we've written out the potential updates
             indextuning_indextempoutput.outputIndexFilesIntoTemp(logging, confFilesRequiringChanges, indexList, gitPath, indexesRequiringChanges, replaceSlashes=False)
             (output, stderr, res) = utility.runOSProcess("cd %s; git status | grep \"nothing to commit\"" % (gitPath))
@@ -880,7 +921,7 @@ if args.bucketTuning or args.indexSizing:
                 logger.info("No changes to be checked into git")
             
 #If we asked for sizing estimates only, and we're not running the dead index check only option
-if args.sizingEstimates:
+if args.sizingEstimates:   
     totalIndexAllocation = 0
     totalEstimatedIndexAllocation = 0
     for index in indexList.keys():
@@ -889,8 +930,18 @@ if args.sizingEstimates:
         logger.debug("Index %s maxTotalDataSizeMB %s" % (index, dataSizeMB))
         if 'estimatedTotalDataSizeMB' in indexList[index]:
             estimatedTotalSize = indexList[index]['estimatedTotalDataSizeMB']
-            logger.debug("Index %s estimatedTotalDataSizeMB %s" % (index, estimatedTotalSize))
+            logger.info("Index %s estimatedTotalDataSizeMB %s" % (index, estimatedTotalSize))
             totalEstimatedIndexAllocation = totalEstimatedIndexAllocation + estimatedTotalSize
+            
+    for index in ignoredIndexesList.keys():
+        dataSizeMB = ignoredIndexesList[index]["maxTotalDataSizeMB"]
+        totalIndexAllocation = totalIndexAllocation + dataSizeMB
+        logger.debug("Index %s maxTotalDataSizeMB %s" % (index, dataSizeMB))
+        if 'estimatedTotalDataSizeMB' in ignoredIndexesList[index]:
+            estimatedTotalSize = ignoredIndexesList[index]['estimatedTotalDataSizeMB']
+            logger.info("Index %s estimatedTotalDataSizeMB %s" % (index, estimatedTotalSize))
+            totalEstimatedIndexAllocation = totalEstimatedIndexAllocation + estimatedTotalSize
+    
     totalVolSize = 0
     for vol in volList.keys():
         volSize = volList[vol]["maxVolumeDataSizeMB"]
@@ -921,7 +972,7 @@ if indexDirCheckRes:
         for line in deadHotDirs.keys():
             for entry in deadHotDirs[line]:
                 #We escaped spaces for the shell, but we do not want spaces escaped for python
-                line = line.replace('\\ ',' ')          
+                line = line.replace('\\ ',' ')
                 thedir = entry + "/" + line
                 if args.deadIndexDelete and not line == "\\$_index_name":
                     if os.path.isdir(thedir):
