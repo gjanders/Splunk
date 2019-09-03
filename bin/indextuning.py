@@ -206,6 +206,7 @@ if args.indexTuning:
     args.bucketTuning = True
     args.indexSizing = True
 
+#| makeresults | eval index="_internal,_audit,_telemetry,_thefishbucket,_introspection,history,default,splunklogger,notable_summary,ioc,threat_activity,endpoint_summary,whois,notable,risk,cim_modactions,cim_summary,xtreme_contexts" | makemv delim="," index | mvexpand index | table index | outputlookup index_tuning_exclusion_list
 if args.bucketTuning or args.indexSizing:
     indexIgnoreURL = 'https://' + args.destURL + '/servicesNS/nobody/search/storage/collections/data/index_tuning_exclusion_list'
     logger.debug("Attempting to obtain index ignore list via rest call to %s" % (indexIgnoreURL))
