@@ -72,6 +72,7 @@ class utility:
         tstatsHomePath = ""
         volName = ""
         datatype = ""
+        disabled = False
         
         #Work line by line on the btool output
         for line in output:
@@ -104,6 +105,7 @@ class utility:
                 else:
                     #skip the volume:... part and the ] at the end
                     volName = stringRes[8:len(stringRes)-1] 
+                    volList[volName] = {}
                 #We are done with this round of the loop
                 continue
             else:
@@ -112,7 +114,10 @@ class utility:
                 value = result2.group(2)
 
             #Path exists only within volumes
-            if (stanza == "path"):
+            if (stanza == "disabled"):
+                if value == "1":
+                    disabled = True
+            elif (stanza == "path"):
                 volList[volName]["path"] = value
             elif (stanza == "coldPath.maxDataSizeMB"):
                 coldPathMaxDataSizeMB = float(value)
@@ -136,12 +141,15 @@ class utility:
                 maxHotBuckets = float(value)
             #This setting only appears in volumes
             elif (stanza == "maxVolumeDataSizeMB"):
-                volList[volName] = {}
                 volList[volName]["maxVolumeDataSizeMB"] = int(value)
             elif (stanza == "maxTotalDataSizeMB"):
                 maxTotalDataSizeMB = int(value)
             #btool prints in lexicographical order so therefore we can assume tstatsHomePath is last
             elif (stanza == "tstatsHomePath"):
+                #Do not record disabled indexes
+                if disabled:
+                    disabled = False
+                    continue                
                 tstatsHomePath = value
                 #btool uses alphabetical order so this is the last entry in the list
                 indexList[indexName] = {"maxDataSize" : maxDataSize, "confFile" : confFileForIndexEntry, "maxHotBuckets": maxHotBuckets, "coldPathMaxDataSizeMB" : coldPathMaxDataSizeMB,
@@ -265,7 +273,7 @@ class utility:
         jsonResult = json.loads(httpResult)
 
         #If we don't have both results we have no data for this index
-        if len(jsonResult["results"]) != 1:
+        if not "results" in jsonResult or len(jsonResult["results"]) != 1:
             logging.error("no results: '%s'" % (jsonResult))
             return float(0), float(0), int(0)
         if len(jsonResult["results"][0]) != 3:
