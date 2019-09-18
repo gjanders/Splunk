@@ -511,7 +511,32 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
         maxTotalDataSizeMB = float(indexList[indexName]['maxTotalDataSizeMB'])
         avgLicenseUsagePerDay = indexList[indexName]['avgLicenseUsagePerDay']
         licenseDataFirstSeen = indexList[indexName]["firstSeen"]
-        
+
+        summaryIndex = False
+        #Zero license usage, this could be a summary index
+        if avgLicenseUsagePerDay == 0:
+            query_res = utility.runSearchQuery("| metadata index=%s type=sourcetypes | table sourcetype" % (indexName))
+            #Load the result so that it's formatted into a dictionary instead of string
+            json_result = json.loads(query_res)
+
+            if len(json_result["results"]) == 1 and json_result["results"][0]["sourcetype"] == "stash":
+                #At this point we know its a summary index
+                #So we can use the average growth rate to determine if any sizing changes are required
+                query_res = utility.runSearchQuery(""" search index=_introspection \"data.name\"=\"%s\"
+                | bin _time span=1d
+                | stats max(data.total_size) AS total_size by host, _time
+                | streamstats current=f window=1 max(total_size) AS prev_total by host
+                | eval diff=total_size - prev_total
+                | stats avg(diff) AS avgchange by host
+                | stats avg(avgchange) AS overallavg""" % (indexName))
+
+                #Load the result so that it's formatted into a dictionary instead of string
+                json_result = json.loads(query_res)
+                if len(json_result["results"]) == 1:
+                    summary_usage_change_per_day = float(json_result["results"][0]["overallavg"])
+                    logger.info("Index: %s is a summary index, average change per day %s from introspection logs" % (indexName, summary_usage_change_per_day))
+                summaryIndex = True
+
         #Company specific field here, the commented size per day in the indexes.conf file
         configuredSizePerDay = -1
         if (indexList[indexName].has_key("sizePerDayInMB")):
@@ -528,10 +553,10 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
             #We have zero incoming data so we should be fine to store the frozen time period in days amount of data
             estimatedDaysForCurrentSize = frozenTimePeriodInDays
 
-            #If this indexed was never sized through the sizing script *and* it has no recent data
+            #If this indexed was never sized through the sizing script *and* it has no recent data *and* it is not a summary index
             #then we cap it at current size + contingency rather than just leaving it on defaults
             #If it had a configured size it's dealt with later in the code
-            if (configuredSizePerDay < 0):
+            if (configuredSizePerDay < 0 and not summaryIndex):
                 #ensure that our new sizing does not drop below what we already have on disk
                 largestOnDiskSize = float(curMaxTotalSize)
                 #add the contingency calculation in as we don't want to size to the point where we drop data once we apply on any of the indexers
@@ -556,6 +581,17 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
         #We leave a bit of room spare just in case by adding a contingency sizing here
         calcSize = int(round(calcSize*sizingContingency))
 
+        if summaryIndex:
+            largestOnDiskSize = float(curMaxTotalSize)
+            if summary_usage_change_per_day < 0.0:
+                calcSize = largestOnDiskSize * sizingContingency
+            else:
+                #Calculate the size per indexer as approx currentSize * contingency value * change per day * amount of time the data is kept in summary
+                calcSize = sizingContingency * summary_usage_change_per_day * frozenTimePeriodInDays
+                if calcSize < largestOnDiskSize:
+                    logger.warn("Index: %s calculation has failed for some reason, found calcSize of %s but on disk size is %s, reverting to current size + contingency" % (indexName, calcSize, largestOnDiskSize))
+                    calcSize = largestOnDiskSize * sizingContingency
+        
         #Store the estimate of how much we will likely use based on sizing calculations, note that we later increase the calcSize
         #to be higher than the minimum limit so we need to store this separately
         indexList[indexName]['estimatedTotalDataSizeMB'] = int(round(calcSize))
@@ -578,6 +614,8 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                 oversized = False 
             elif (licenseDataFirstSeen < minimumDaysOfLicenseForSizing):
                 oversized = False
+            elif maxTotalDataSizeMB == 0:
+                logger.warn("Index: %s, maxTotalDataSizeMB == 0, invalid setting" % (indexName))              
             else:
                 #If we have oversized the index by a significant margin we do something, if not we take no action
                 percEst = calcSize / maxTotalDataSizeMB
@@ -946,10 +984,13 @@ if args.sizingEstimates:
     
     totalVolSize = 0
     for vol in volList.keys():
-        volSize = volList[vol]["maxVolumeDataSizeMB"]
-        if vol != "_splunk_summaries":
-            totalVolSize = totalVolSize + volSize
-        logger.info("Vol %s maxVolumeDataSizeMB %s" % (vol, volSize))
+        if "maxVolumeDataSizeMB" in volList[vol]:
+            volSize = volList[vol]["maxVolumeDataSizeMB"]
+            if vol != "_splunk_summaries":
+                totalVolSize = totalVolSize + volSize
+            logger.info("Vol %s maxVolumeDataSizeMB %s" % (vol, volSize))
+        else:
+            logger.info("No maxVolumeDataSizeMB found for volume %s" % (vol))
     logger.info("Summary: total index allocated %s total vol (excluding _splunk_summaries) %s total" % (totalIndexAllocation, totalVolSize))
     
     if totalEstimatedIndexAllocation > 0:
