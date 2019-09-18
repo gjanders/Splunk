@@ -537,6 +537,13 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                     logger.info("Index: %s is a summary index, average change per day %s from introspection logs" % (indexName, summary_usage_change_per_day))
                 summaryIndex = True
 
+                largestOnDiskSize = float(curMaxTotalSize)
+                if summary_usage_change_per_day < 0.0:
+                    calcSize = largestOnDiskSize
+                else:
+                    #Calculate the size per indexer as approx currentSize * contingency value * change per day * amount of time the data is kept in summary
+                    calcSize = curMaxTotalSize + (summary_usage_change_per_day * frozenTimePeriodInDays)
+        
         #Company specific field here, the commented size per day in the indexes.conf file
         configuredSizePerDay = -1
         if (indexList[indexName].has_key("sizePerDayInMB")):
@@ -544,8 +551,10 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
 
         oversized = False
         estimatedDaysForCurrentSize = 0
-        #calculate the index size usage based on recent license usage data and divide by the number of indexers we have
-        calcSize = (storageRatio * avgLicenseUsagePerDay * frozenTimePeriodInDays)/numberOfIndexers
+        
+        if not summaryIndex:
+            #calculate the index size usage based on recent license usage data and divide by the number of indexers we have
+            calcSize = (storageRatio * avgLicenseUsagePerDay * frozenTimePeriodInDays)/numberOfIndexers
         
         #This index has data but no incoming data during the measurement period (via the license logs), capping the index at current size + contingency
         #or the estimated size if we have it
@@ -576,21 +585,13 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
             if storageRatio == 0.0:
                 estimatedDaysForCurrentSize = frozenTimePeriodInDays
             else:
-                estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * sizingContingency)/numberOfIndexers)))
+                if summaryIndex:
+                    estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / (calcSize * sizingContingency)))
+                else:
+                    estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * sizingContingency)/numberOfIndexers)))
             
         #We leave a bit of room spare just in case by adding a contingency sizing here
         calcSize = int(round(calcSize*sizingContingency))
-
-        if summaryIndex:
-            largestOnDiskSize = float(curMaxTotalSize)
-            if summary_usage_change_per_day < 0.0:
-                calcSize = largestOnDiskSize * sizingContingency
-            else:
-                #Calculate the size per indexer as approx currentSize * contingency value * change per day * amount of time the data is kept in summary
-                calcSize = sizingContingency * summary_usage_change_per_day * frozenTimePeriodInDays
-                if calcSize < largestOnDiskSize:
-                    logger.warn("Index: %s calculation has failed for some reason, found calcSize of %s but on disk size is %s, reverting to current size + contingency" % (indexName, calcSize, largestOnDiskSize))
-                    calcSize = largestOnDiskSize * sizingContingency
         
         #Store the estimate of how much we will likely use based on sizing calculations, note that we later increase the calcSize
         #to be higher than the minimum limit so we need to store this separately
@@ -607,7 +608,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
         donotIncrease = False
         
         #This index was never sized so auto-size it
-        if (configuredSizePerDay < 0):
+        if (configuredSizePerDay < 0 and not summaryIndex):
             if (not calcSize):
                 #Assume we're ok as we have no data to say otherwise...this could be for example a new index about to receive data
                 #so do nothing here
@@ -624,6 +625,12 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                     #Index is oversized > ?% therefore we can use our new sizing to deal with this
                     logger.info("Index: %s is oversized, perc %s or calculatedSize/maxTotalSize (%s/%s) is less than the adjustment threshold of %s, index will be resized, earliest data is %s" % (indexName, percEst, calcSize,  maxTotalDataSizeMB, percBeforeAdjustment, earliestTime))
                     oversized = True
+        elif summaryIndex:
+            #If we are nto able to keep the amount of data we expect in the summary index increase it
+            #currently summary indexes do not decrease, they only increase
+            if (estimatedDaysForCurrentSize < frozenTimePeriodInDays):
+                 #We will increase the sizing for this index
+                 logger.info("Index: %s requires more sizing currently %s, new sizing %s, frozenTimeInDays %s, oldest data found is %s days old" % (indexName, maxTotalDataSizeMB, calcSize, frozenTimePeriodInDays, earliestTime))                        
         else:
             if (not calcSize):
                 #Assume we're ok as we have no data to say otherwise...this could be for example a new index about to receive data
@@ -700,11 +707,10 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
             if (maxTotalDataSizeMB == indexList[indexName]['calcMaxTotalDataSizeMB']):
                 logger.info("Index: %s, current size of %s is the new calculated size, therefore no changes required here" % (indexName, maxTotalDataSizeMB))
             #If we appear to be undersized but we don't have enough data yet            
-            elif (licenseDataFirstSeen < minimumDaysOfLicenseForSizing):
+            elif (licenseDataFirstSeen < minimumDaysOfLicenseForSizing and not summaryIndex):
                 logger.info("Index: %s appears to be undersized but has %s days of license data, minimum days for sizing is %s, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, earliestTime is %s" % (indexName, licenseDataFirstSeen, minimumDaysOfLicenseForSizing, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, earliestTime))
             #If we have enough data and we're doing a bucket size adjustment we are now also doing the index sizing adjustment
-            elif (requiresChange != False and oversized != True):
-            
+            elif (requiresChange != False and oversized != True):            
                 adjustIfAbove = maxTotalDataSizeMB * undersizingContingency
                 if indexList[indexName]['calcMaxTotalDataSizeMB'] > adjustIfAbove:
                     requiresChange = requiresChange + "_sizing"
