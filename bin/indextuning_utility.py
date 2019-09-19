@@ -102,7 +102,8 @@ class utility:
                 #Skip volume entries
                 if (stringRes.find("[volume") == -1):
                     #Slice it out of the string
-                    indexName = stringRes[1:len(stringRes)-1]
+                    #lowercase the index name just in case capitals were used within the indexes.conf file
+                    indexName = stringRes[1:len(stringRes)-1].lower()
                     confFileForIndexEntry = confFile
                 else:
                     #skip the volume:... part and the ] at the end
@@ -184,7 +185,8 @@ class utility:
                     elif (line.find("[") == 0):
                         start = line.find("[")+1
                         end = line.find("]")
-                        indexName = line[start:end]
+                        #lowercase index name in case capital letters were used in the indexes.conf
+                        indexName = line[start:end].lower()
                         skipVol = False
                     #comments with sizing have @ symbols, nothing else has the @ symbol in the btool indexes list output
                     elif (line.find("@") != -1):
