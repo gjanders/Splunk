@@ -8,6 +8,8 @@ from time import sleep
 import sys
 import os
 import logging
+import Queue
+import threading
 
 #Index Tuning Utility Class
 #runs queries against Splunk or Splunk commands
