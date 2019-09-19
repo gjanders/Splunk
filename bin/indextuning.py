@@ -593,9 +593,14 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
         #We leave a bit of room spare just in case by adding a contingency sizing here
         calcSize = int(round(calcSize*sizingContingency))
         
-        #Store the estimate of how much we will likely use based on sizing calculations, note that we later increase the calcSize
-        #to be higher than the minimum limit so we need to store this separately
-        indexList[indexName]['estimatedTotalDataSizeMB'] = int(round(calcSize))
+        if calcSize < curMaxTotalSize:
+            #If we are now ingesting less data the calculation may show that we could shrink the index
+            #but we never want to estimate less than we already have...
+            indexList[indexName]['estimatedTotalDataSizeMB'] = curMaxTotalSize
+        else:
+            #Store the estimate of how much we will likely use based on sizing calculations, note that we later increase the calcSize
+            #to be higher than the minimum limit so we need to store this separately
+            indexList[indexName]['estimatedTotalDataSizeMB'] = calcSize
         
         #Bucket explosion occurs if we undersize an index too much so cap at the lower size limit
         if (calcSize < lowerIndexSizeLimit):
