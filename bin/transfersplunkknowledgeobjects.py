@@ -7,6 +7,7 @@ import argparse
 import json
 import copy
 from datetime import datetime,timedelta
+import re
 
 ###########################
 #
@@ -97,6 +98,8 @@ parser.add_argument('-privateOnly', help='(optional) Only transfer private objec
 parser.add_argument('-viewstates', help='(optional) migrate viewstates', action='store_true')
 parser.add_argument('-ignoreViewstatesAttribute', help='(optional) when creating saved searches strip the vsid parameter/attribute before attempting to create the saved search', action='store_true')
 parser.add_argument('-disableAlertsOrReportsOnMigration', help='(optional) when creating alerts/reports, set disabled=1 (or enableSched=0) irrelevant of the previous setting pre-migration', action='store_true')
+parser.add_argument('-nameFilter', help='(optional) use a regex filter to find the names of the objects to transfer')
+parser.add_argument('-sharingFilter', help='(optional) only transfer objects with this level of sharing (user, app, global)', choices=['user', 'app', 'global'])
 
 args = parser.parse_args()
 
@@ -128,6 +131,9 @@ else:
 destOwner=False
 if args.destOwner:
     destOwner = args.destOwner
+
+if args.nameFilter:
+    nameFilter = re.compile(args.nameFilter)
 
 #From server
 splunk_rest = args.srcURL
@@ -199,15 +205,21 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                     #If we have an include/exclude list we deal with that scenario now
                     if includeEntities:
                         if not title in includeEntities:
-                            logger.debug("%s of type %s not in includeEntities list in app %s" % (info["name"], type, app))
+                            logger.debug("%s of type %s not in includeEntities list in app %s" % (title, type, app))
                             keep = False
                             break
                     if excludeEntities:
                         if title in excludeEntities:
-                            logger.debug("%s of type %s in excludeEntities list in app %s" % (info["name"], type, app))
+                            logger.debug("%s of type %s in excludeEntities list in app %s" % (title, type, app))
                             keep = False
                             break
-                            
+                    
+                    if args.nameFilter:
+                        if not nameFilter.search(title):
+                            logger.debug("%s of type %s does not match regex in app %s" % (title, type, app))
+                            keep = False
+                            break
+                    
                     #Backup the original name if we override it, override works fine for creation
                     #but updates require the original name
                     if 'name' in aliasAttributes.values():
@@ -236,6 +248,12 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                                         logger.debug("%s of type %s found but the privateOnly flag is true and value of %s is not user level sharing (private), excluding this in app %s" % (info["name"], type, info["sharing"], app))
                                         keep = False
                                         break
+                                        
+                                    if args.sharingFilter and not args.sharingFilter == info["sharing"]:
+                                        logger.debug("%s of type %s found but the sharing level is set to %s and this object has sharing %s excluding this in app %s" % (info["name"], type, args.sharingFilter, info["sharing"], app))
+                                        keep = False
+                                        break
+                                        
                                 elif theList.attrib['name'] == 'app':
                                     foundApp = theList.text
                                     logger.debug("%s of type %s in app context of %s belongs to %s" % (info["name"], type, app, foundApp))
@@ -627,14 +645,21 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
                     #Deal with the include/exclude lists
                     if includeEntities:
                         if not title in includeEntities:
-                            logger.debug("%s of type macro not in includeEntities list in app %s" % (macroInfo["name"], app))
+                            logger.debug("%s of type macro not in includeEntities list in app %s" % (title, app))
                             keep = False
                             break
                     if excludeEntities:
                         if title in excludeEntities:
-                            logger.debug("%s of type macro in excludeEntities list in app %s" % (macroInfo["name"], app))
+                            logger.debug("%s of type macro in excludeEntities list in app %s" % (title, app))
                             keep = False
                             break
+                    
+                    if args.nameFilter:
+                        if not nameFilter.search(title):
+                            logger.debug("%s of type macro does not match regex in app %s" % (title, app))
+                            keep = False
+                            break
+                
                 elif innerChild.tag.endswith("updated"):
                     updatedStr = innerChild.text
                     updated = determineTime(updatedStr, macroInfo["name"], app, "macro")
@@ -660,6 +685,12 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
                                         logger.debug("%s of type macro found but the privateOnly flag is true and sharing is %s, excluding this in app %s" % (macroInfo["name"], macroInfo["sharing"], app))
                                         keep = False
                                         break
+                                    
+                                    if args.sharingFilter and not args.sharingFilter == info["sharing"]:
+                                        logger.debug("%s of type macro found but the sharing level is set to %s and this object has sharing %s excluding this in app %s" % (macroInfo["name"], args.sharingFilter, macroInfo["sharing"], app))
+                                        keep = False
+                                        break
+                                        
                                 elif theList.attrib['name'] == 'app':
                                     logger.debug("macro app: %s" % (theList.text))
                                     foundApp = theList.text
@@ -891,7 +922,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
 # 
 ###########################
 def dashboards(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
-    ignoreList = [ "disabled", "eai:appName", "eai:digest", "eai:userName", "isDashboard", "isVisible", "label", "rootNode", "description", "version" ]
+    ignoreList = [ "disabled", "eai:appName", "eai:digest", "eai:userName", "isDashboard", "isVisible", "label", "rootNode", "description", "version" ]    
     return runQueries(app, "/data/ui/views", "dashboard", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
 
 ###########################
@@ -1178,6 +1209,22 @@ if args.includeOwner:
 excludedList = [ "srcPassword", "destPassword" ]
 cleanArgs = without_keys(vars(args), excludedList)
 logger.info("transfer splunk knowledge objects run with arguments %s" % (cleanArgs))
+
+src_app_list = None
+#Wildcarded app names...use regex
+if srcApp.find("*") != -1:
+    src_app_list = []
+    url = splunk_rest + "/services/apps/local?search=disabled%3D0&f=title&count=0&output_mode=json"
+    app_pattern = re.compile(srcApp)
+    #Verify=false is hardcoded to workaround local SSL issues
+    res = requests.get(url, auth=(srcUsername,srcPassword), verify=False)
+    resDict = json.loads(res.text)
+    for entry in resDict['entry']:
+        logger.debug("entry name is %s, pattern is %s" % (entry['name'], srcApp))
+        if app_pattern.search(entry['name']):
+            logger.info("Adding app %s to the list of apps" % (entry['name']))
+            src_app_list.append(entry['name'])
+
 ###########################
 #
 # Run the required functions based on the args
@@ -1186,97 +1233,270 @@ logger.info("transfer splunk knowledge objects run with arguments %s" % (cleanAr
 ##########################
 if args.macros:
     logger.info("Begin macros transfer")
-    macroResults = macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    
+    if src_app_list:
+        macroResults = {}
+        macroResultsList = []
+        for srcApp in src_app_list:            
+            macroResultsTemp = macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            macroResultsList.append(macroResultsTemp)
+        for macroResultsDict in macroResultsList:
+            macroResults.update(macroResultsDict)
+    else:
+        macroResults = macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End macros transfer")
 
 if args.tags:
     logger.info("Begin tags transfer")
-    (tagsResults) = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    
+    if src_app_list:
+        tagsResults = {}
+        tagsResultsList = []
+        for srcApp in src_app_list:
+            tagsResultsTemp = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            tagsResultsList.append(tagsResultsTemp)
+        for tagResultsDict in tagsResultsList:
+            tagsResults.update(tagResultsDict)
+    else:
+        tagsResults = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End tags transfer")
 
 if args.eventtypes:
     logger.info("Begin eventtypes transfer")
-    (eventtypeResults) = eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        eventTypesResults = {}
+        eventTypesResultsList = []
+        for srcApp in src_app_list:
+            eventTypesResultsTemp = eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            eventTypesResultsList.append(eventTypesResultsTemp)
+        for eventTypeResultsDict in eventTypesResultsList:
+            eventTypesResults.update(eventTypeResultsDict)
+    else:    
+        eventtypeResults = eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End eventtypes transfer")
 
 if args.calcFields:
     logger.info("Begin calcFields transfer")
-    (calcfieldsResults) = calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        calcfieldsResults = {}
+        calcfieldsResultsList = []
+        for srcApp in src_app_list:
+            calcfieldsResultsTemp = calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            calcfieldsResultsList.append(calcfieldsResultsTemp)
+        for calcFieldsResultsDict in calcfieldsResultsList:
+            calcfieldsResults.update(calcFieldsResultsDict)
+    else:    
+        calcfieldsResults = calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End calcFields transfer")
 
 if args.fieldAlias:
-    logger.info("Begin fieldAlias transfer")
-    (fieldaliasesResults) = fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    logger.info("Begin fieldAlias transfer")    
+    if src_app_list:
+        fieldaliasesResults = {}
+        fieldaliasesResultsList = []
+        for srcApp in src_app_list:
+            fieldaliasesResultsTemp = fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            fieldaliasesResultsList.append(fieldaliasesResultsTemp)
+        for fieldAliasResultsDict in fieldaliasesResultsList:
+            fieldaliasesResults.update(fieldAliasResultsDict)
+    else:
+        fieldaliasesResults = fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End fieldAlias transfer")
 
 if args.fieldTransforms:
-    logger.info("Begin fieldTransforms transfer")    
-    (fieldTransformationsResults) = fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    logger.info("Begin fieldTransforms transfer")
+    if src_app_list:
+        fieldTransformationsResults = {}
+        fieldTransformsResultsList = []
+        for srcApp in src_app_list:
+            fieldTransformsResultsTemp = fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            fieldTransformsResultsList.append(fieldTransformsResultsTemp)
+        for fieldTransformsResultsDict in fieldTransformsResultsList:
+            fieldTransformationsResults.update(fieldTransformsResultsDict)
+    else:
+        fieldTransformationsResults = fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End fieldTransforms transfer")
 
 if args.fieldExtraction:
-    logger.info("Begin fieldExtraction transfer")    
-    (fieldextractionsResults) = fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    logger.info("Begin fieldExtraction transfer")
+    if src_app_list:
+        fieldextractionsResults = {}
+        fieldextractionsResultsList = []
+        for srcApp in src_app_list:
+            fieldextractionsResultsTemp = fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            fieldextractionsResultsList.append(fieldextractionsResultsTemp)
+        for fieldextractionsResultsDict in fieldextractionsResultsList:
+            fieldextractionsResults.update(fieldextractionsResultsDict)
+    else:
+        fieldextractionsResults = fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End fieldExtraction transfer")
 
 if args.collections:
     logger.info("Begin collections (kvstore definition) transfer")
-    (collectionsResults) = collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        collectionsResults = {}
+        collectionsResultsList = []
+        for srcApp in src_app_list:
+            collectionsResultsTemp = collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            collectionsResultsList.append(collectionsResultsTemp)
+        for collectionsResultsDict in collectionsResultsList:
+            collectionsResults.update(collectionsResultsDict)
+    else:
+        collectionsResults = collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End collections (kvstore definition) transfer")
 
 if args.lookupDefinition:
     logger.info("Begin lookupDefinitions transfer")
-    (lookupDefinitionsResults) = lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        lookupDefinitionsResults = {}
+        lookupDefinitionsResultsList = []
+        for srcApp in src_app_list:
+            lookupDefinitionsResultsTemp = lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            lookupDefinitionsResultsList.append(lookupDefinitionsResultsTemp)
+        for lookupDefinitionsResultsDict in lookupDefinitionsResultsList:
+            lookupDefinitionsResults.update(lookupDefinitionsResultsDict)
+    else:
+        lookupDefinitionsResults = lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End lookupDefinitions transfer")
 
 if args.automaticLookup:
     logger.info("Begin automaticLookup transfer")
-    (automaticLookupsResults) = automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        automaticLookupsResults = {}
+        automaticLookupsResultsList = []
+        for srcApp in src_app_list:
+            automaticLookupsResultsTemp = automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            automaticLookupsResultsList.append(automaticLookupsResultsTemp)
+        for automaticLookupsResultsDict in automaticLookupsResultsList:
+            automaticLookupsResults.update(automaticLookupsResultsDict)
+    else:
+        automaticLookupsResults = automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End automaticLookup transfer")
 
 if args.times:
     logger.info("Begin times (conf-times) transfer")
-    (timesResults) = times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        timesResults = {}
+        timesResultsList = []
+        for srcApp in src_app_list:
+            timesResultsTemp = times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            timesResultsList.append(timesResultsTemp)
+        for timesResultsDict in timesResultsList:
+            timesResults.update(timesResultsDict)
+    else:    
+        timesResults = times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End times (conf-times) transfer")
 
 if args.viewstates:
     logger.info("Begin viewstates transfer")
-    (viewstatesResults) = viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        viewstatesResults = {}
+        viewstatesResultsList = []
+        for srcApp in src_app_list:
+            viewstatesResultsTemp = viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            viewstatesResultsList.append(viewstatesResultsTemp)
+        for viewstatesResultsDict in viewstatesResultsList:
+            viewstatesResults.update(viewstatesResultsDict)
+    else:    
+        viewstatesResults = viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End viewstates transfer")
     
 if args.panels:
     logger.info("Begin pre-built dashboard panels transfer")
-    (panelsResults) = panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        panelsResults = {}
+        panelsResultsList = []
+        for srcApp in src_app_list:
+            panelsResultsTemp = panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            panelsResultsList.append(panelsResultsTemp)
+        for panelsResultsDict in panelsResultsList:
+            panelsResults.update(panelsResultsDict)
+    else:    
+        panelsResults = panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End pre-built dashboard panels transfer")
     
 if args.datamodels:
     logger.info("Begin datamodels transfer")
-    (datamodelResults) = datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        datamodelResults = {}
+        datamodelResultsList = []
+        for srcApp in src_app_list:
+            datamodelResultsTemp = datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            datamodelResultsList.append(datamodelResultsTemp)
+        for datamodelResultsDict in datamodelResultsList:
+            datamodelResults.update(datamodelResultsDict)
+    else:    
+        datamodelResults = datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End datamodels transfer")
 
 if args.dashboards:
     logger.info("Begin dashboards transfer")
-    (dashboardResults) = dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        dashboardResults = {}
+        dashboardResultsList = []
+        for srcApp in src_app_list:
+            dashboardResultsTemp = dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            dashboardResultsList.append(dashboardResultsTemp)
+        for dashboardResultsDict in dashboardResultsList:
+            dashboardResults.update(dashboardResultsDict)
+    else:    
+        dashboardResults = dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End dashboards transfer")
 
 if args.savedsearches:
     logger.info("Begin savedsearches transfer")
-    (savedSearchResults) = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        savedSearchResults = {}
+        savedSearchResultsList = []
+        for srcApp in src_app_list:
+            savedSearchResultsTemp = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.overrideMode, args.overrideAlwaysMode)
+            savedSearchResultsList.append(savedSearchResultsTemp)
+        for savedSearchResultsDict in savedSearchResultsList:
+            savedSearchResults.update(savedSearchResultsDict)
+    else:
+        savedSearchResults = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End savedsearches transfer")
 
 if args.workflowActions:
     logger.info("Begin workflowActions transfer")
-    (workflowActionsResults) = workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        workflowActionsResults = {}
+        workflowActionsResultsList = []
+        for srcApp in src_app_list:
+            workflowActionsResultsTemp = workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            workflowActionsResultsList.append(workflowActionsResultsTemp)
+        for workflowActionsResultsDict in workflowActionsResultsList:
+            workflowActionsResults.update(workflowActionsResultsDict)
+    else:
+        workflowActionsResults = workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End workflowActions transfer")
 
 if args.sourcetypeRenaming:
     logger.info("Begin sourcetypeRenaming transfer")
-    (sourcetypeRenamingResults) = sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        sourcetypeRenamingResults = {}
+        sourcetypeRenamingResultsList = []
+        for srcApp in src_app_list:
+            sourcetypeRenamingResultsTemp = sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            sourcetypeRenamingResultsList.append(sourcetypeRenamingResultsTemp)
+        for sourcetypeRenamingResultsDict in sourcetypeRenamingResultsList:
+            sourcetypeRenamingResults.update(sourcetypeRenamingResultsDict)
+    else:    
+        sourcetypeRenamingResults = sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End sourcetypeRenaming transfer")
 
 if args.navMenu:
     logger.info("Begin navMenu transfer")
-    (navMenuResults) = navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+    if src_app_list:
+        navMenuResults = {}
+        navMenuResultsList = []
+        for srcApp in src_app_list:
+            navMenuResultsTemp = navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            navMenuResultsList.append(navMenuResultsTemp)
+        for navMenuResultsDict in navMenuResultsList:
+            navMenuResults.update(navMenuResultsDict)
+    else:    
+        navMenuResults = navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End navMenu transfer")
 
 ###########################
