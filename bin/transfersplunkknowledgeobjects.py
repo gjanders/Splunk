@@ -171,10 +171,9 @@ def popLastResult(resultsDict, name):
 #   Due to variations in the REST API there are a few hacks inside this method to handle specific use cases, however the majority are straightforward
 # 
 ###########################
-def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="", destOwner=False, noPrivate=False, noDisabled=False, override=None, includeEntities=None, excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None, disableAlertsOrReportsOnMigration=False, overrideAlways=None):
-
+def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="", destOwner=False, noPrivate=False, noDisabled=False, override=None, includeEntities=None, excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None, disableAlertsOrReportsOnMigration=False, overrideAlways=None, actionResults=None):
     #Keep a success/Failure list to be returned by this function
-    actionResults = {}
+    #actionResults = {}
     
     #Use count=-1 to ensure we see all the objects
     url = splunk_rest + "/servicesNS/-/" + app + endpoint + "?count=-1"
@@ -616,9 +615,8 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
 ###########################
 #macro use cases are slightly different to everything else on the REST API
 #enough that this code has not been integrated into the runQuery() function
-def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, macroResults):
     macros = {}
-    macroResults = {}
     #servicesNS/-/-/properties/macros doesn't show private macros so using /configs/conf-macros to find all the macros
     #again with count=-1 to find all the available macros
     url = splunk_rest + "/servicesNS/-/" + app + "/configs/conf-macros?count=-1"
@@ -921,16 +919,16 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
 # Dashboards
 # 
 ###########################
-def dashboards(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
-    ignoreList = [ "disabled", "eai:appName", "eai:digest", "eai:userName", "isDashboard", "isVisible", "label", "rootNode", "description", "version" ]    
-    return runQueries(app, "/data/ui/views", "dashboard", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+def dashboards(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
+    ignoreList = [ "disabled", "eai:appName", "eai:digest", "eai:userName", "isDashboard", "isVisible", "label", "rootNode", "description", "version" ]
+    return runQueries(app, "/data/ui/views", "dashboard", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
 ###########################
 #
 # Saved Searches
 # 
 ###########################
-def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, ignoreVSID, disableAlertsOrReportsOnMigration, override, overrideAlways):
+def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, ignoreVSID, disableAlertsOrReportsOnMigration, override, overrideAlways, actionResults):
     ignoreList = [ "embed.enabled", "triggered_alert_count" ]
     
     #View states gracefully fail in the GUI, via the REST API you cannot create the saved search if the view state does not exist
@@ -938,127 +936,127 @@ def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntitie
     if ignoreVSID:
         ignoreList.append("vsid")
     
-    return runQueries(app, "/saved/searches", "savedsearches", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, disableAlertsOrReportsOnMigration=disableAlertsOrReportsOnMigration, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/saved/searches", "savedsearches", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, disableAlertsOrReportsOnMigration=disableAlertsOrReportsOnMigration, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
 ###########################
 #
 # field definitions
 # 
 ###########################
-def calcfields(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def calcfields(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "attribute", "type" ]
     aliasAttributes = { "field.name" : "name" }
-    return runQueries(app, "/data/props/calcfields", "calcfields", ignoreList, destApp, aliasAttributes, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/data/props/calcfields", "calcfields", ignoreList, destApp, aliasAttributes, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
     
-def fieldaliases(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def fieldaliases(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "attribute", "type", "value" ]
-    return runQueries(app, "/data/props/fieldaliases", "fieldaliases", ignoreList, destApp, nameOverride="name", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)            
+    return runQueries(app, "/data/props/fieldaliases", "fieldaliases", ignoreList, destApp, nameOverride="name", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
-def fieldextractions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def fieldextractions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "attribute" ]
-    return runQueries(app, "/data/props/extractions", "fieldextractions", ignoreList, destApp, {}, { "Inline" : "EXTRACT", "Uses transform" : "REPORT" }, "attribute", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/data/props/extractions", "fieldextractions", ignoreList, destApp, {}, { "Inline" : "EXTRACT", "Uses transform" : "REPORT" }, "attribute", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
-def fieldtransformations(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def fieldtransformations(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "attribute", "DEFAULT_VALUE", "DEPTH_LIMIT", "LOOKAHEAD", "MATCH_LIMIT", "WRITE_META", "eai:appName", "eai:userName", "DEST_KEY" ]
-    return runQueries(app, "/data/transforms/extractions", "fieldtransformations", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/data/transforms/extractions", "fieldtransformations", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
     
-def workflowactions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def workflowactions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "disabled", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/data/ui/workflow-actions", "workflow-actions", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/data/ui/workflow-actions", "workflow-actions", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
-def sourcetyperenaming(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def sourcetyperenaming(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "attribute", "disabled", "eai:appName", "eai:userName", "stanza", "type" ]
-    return runQueries(app, "/data/props/sourcetype-rename", "sourcetype-rename", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/data/props/sourcetype-rename", "sourcetype-rename", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
 ###########################
 #
 # tags
 # 
 ##########################
-def tags(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def tags(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "disabled", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/configs/conf-tags", "tags", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/configs/conf-tags", "tags", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
 ###########################
 #
 # eventtypes
 # 
 ##########################
-def eventtypes(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def eventtypes(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "disabled", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/saved/eventtypes", "eventtypes", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/saved/eventtypes", "eventtypes", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
 ###########################
 #
 # navMenus
 # 
 ##########################
-def navMenu(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def navMenu(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "disabled", "eai:appName", "eai:userName", "eai:digest", "rootNode" ]
     #If override we override the default nav menu of the destination app
-    return runQueries(app, "/data/ui/nav", "navMenu", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, override=override, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, overrideAlways=overrideAlways)
+    return runQueries(app, "/data/ui/nav", "navMenu", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, override=override, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, overrideAlways=overrideAlways, actionResults=actionResults)
 
 ###########################
 #
 # data models
 # 
 ##########################
-def datamodels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def datamodels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "disabled", "eai:appName", "eai:userName", "eai:digest", "eai:type", "acceleration.allowed" ]
     #If override we override the default nav menu of the destination app
-    return runQueries(app, "/datamodel/model", "datamodels", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/datamodel/model", "datamodels", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
 ###########################
 #
 # collections
 #
 ##########################
-def collections(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def collections(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "eai:appName", "eai:userName", "type" ]
     #nobody is the only username that can be used when working with collections
-    return runQueries(app, "/storage/collections/config", "collections (kvstore definition)", ignoreList, destApp,destOwner="nobody", noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/storage/collections/config", "collections (kvstore definition)", ignoreList, destApp,destOwner="nobody", noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
 ###########################
 #
 # viewstates
 #
 ##########################
-def viewstates(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def viewstates(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "eai:appName", "eai:userName" ]
     #nobody is the only username that can be used when working with collections
-    return runQueries(app, "/configs/conf-viewstates", "viewstates", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/configs/conf-viewstates", "viewstates", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
 ###########################
 #
 # time labels (conf-times)
 #
 ##########################
-def times(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def times(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "disabled", "eai:appName", "eai:userName", "header_label" ]
-    return runQueries(app, "/configs/conf-times", "times (conf-times)", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/configs/conf-times", "times (conf-times)", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
 ###########################
 #
 # panels
 #
 ##########################
-def panels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def panels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "disabled", "eai:digest", "panel.title", "rootNode", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/data/ui/panels", "pre-built dashboard panels", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/data/ui/panels", "pre-built dashboard panels", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
     
 ###########################
 #
 # lookups (definition/automatic)
 #
 ##########################
-def lookupDefinitions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def lookupDefinitions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "disabled", "eai:appName", "eai:userName", "CAN_OPTIMIZE", "CLEAN_KEYS", "DEPTH_LIMIT", "KEEP_EMPTY_VALS", "LOOKAHEAD", "MATCH_LIMIT", "MV_ADD", "SOURCE_KEY", "WRITE_META", "fields_array", "type" ]
     #If override we override the default nav menu of the destination app
-    return runQueries(app, "/data/transforms/lookups", "lookup definition", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/data/transforms/lookups", "lookup definition", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
-def automaticLookups(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways):
+def automaticLookups(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "attribute", "type", "value" ]
-    return runQueries(app, "/data/props/lookups", "automatic lookup", ignoreList, destApp, {}, {}, "attribute", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways)
+    return runQueries(app, "/data/props/lookups", "automatic lookup", ignoreList, destApp, {}, {}, "attribute", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
 ###########################
 #
@@ -1233,270 +1231,192 @@ if srcApp.find("*") != -1:
 ##########################
 if args.macros:
     logger.info("Begin macros transfer")
-    
+    macroResults = {}
     if src_app_list:
-        macroResults = {}
-        macroResultsList = []
-        for srcApp in src_app_list:            
-            macroResultsTemp = macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            macroResultsList.append(macroResultsTemp)
-        for macroResultsDict in macroResultsList:
-            macroResults.update(macroResultsDict)
+        for srcApp in src_app_list:
+            macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, macroResults)
     else:
-        macroResults = macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
     logger.info("End macros transfer")
 
 if args.tags:
     logger.info("Begin tags transfer")
-    
+    tagsResults = {}
     if src_app_list:
-        tagsResults = {}
-        tagsResultsList = []
         for srcApp in src_app_list:
-            tagsResultsTemp = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            tagsResultsList.append(tagsResultsTemp)
-        for tagResultsDict in tagsResultsList:
-            tagsResults.update(tagResultsDict)
+            tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, tagsResults)
     else:
-        tagsResults = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        tagsResults = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, tagsResults)
     logger.info("End tags transfer")
 
 if args.eventtypes:
     logger.info("Begin eventtypes transfer")
+    eventTypesResults = {}
     if src_app_list:
-        eventTypesResults = {}
-        eventTypesResultsList = []
         for srcApp in src_app_list:
-            eventTypesResultsTemp = eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            eventTypesResultsList.append(eventTypesResultsTemp)
-        for eventTypeResultsDict in eventTypesResultsList:
-            eventTypesResults.update(eventTypeResultsDict)
-    else:    
-        eventtypeResults = eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, eventTypesResults)
+    else:
+        eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, eventTypesResults)
     logger.info("End eventtypes transfer")
 
 if args.calcFields:
     logger.info("Begin calcFields transfer")
+    calcfieldsResults = {}
     if src_app_list:
-        calcfieldsResults = {}
-        calcfieldsResultsList = []
         for srcApp in src_app_list:
-            calcfieldsResultsTemp = calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            calcfieldsResultsList.append(calcfieldsResultsTemp)
-        for calcFieldsResultsDict in calcfieldsResultsList:
-            calcfieldsResults.update(calcFieldsResultsDict)
+            calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, calcfieldsResults)
     else:    
-        calcfieldsResults = calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, calcfieldsResults)
     logger.info("End calcFields transfer")
 
 if args.fieldAlias:
-    logger.info("Begin fieldAlias transfer")    
+    logger.info("Begin fieldAlias transfer")
+    fieldaliasesResults = {}
     if src_app_list:
-        fieldaliasesResults = {}
-        fieldaliasesResultsList = []
         for srcApp in src_app_list:
-            fieldaliasesResultsTemp = fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            fieldaliasesResultsList.append(fieldaliasesResultsTemp)
-        for fieldAliasResultsDict in fieldaliasesResultsList:
-            fieldaliasesResults.update(fieldAliasResultsDict)
+            fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldaliasesResults)
     else:
-        fieldaliasesResults = fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldaliasesResults)
     logger.info("End fieldAlias transfer")
 
 if args.fieldTransforms:
     logger.info("Begin fieldTransforms transfer")
+    fieldTransformationsResults = {}
     if src_app_list:
-        fieldTransformationsResults = {}
-        fieldTransformsResultsList = []
         for srcApp in src_app_list:
-            fieldTransformsResultsTemp = fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            fieldTransformsResultsList.append(fieldTransformsResultsTemp)
-        for fieldTransformsResultsDict in fieldTransformsResultsList:
-            fieldTransformationsResults.update(fieldTransformsResultsDict)
+            fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldTransformationsResults)
     else:
-        fieldTransformationsResults = fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        fieldTransformationsResults = fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldTransformationsResults)
     logger.info("End fieldTransforms transfer")
 
 if args.fieldExtraction:
     logger.info("Begin fieldExtraction transfer")
+    fieldextractionsResults = {}
     if src_app_list:
-        fieldextractionsResults = {}
-        fieldextractionsResultsList = []
         for srcApp in src_app_list:
-            fieldextractionsResultsTemp = fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            fieldextractionsResultsList.append(fieldextractionsResultsTemp)
-        for fieldextractionsResultsDict in fieldextractionsResultsList:
-            fieldextractionsResults.update(fieldextractionsResultsDict)
+            fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldextractionsResults)
     else:
-        fieldextractionsResults = fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldextractionsResults)
     logger.info("End fieldExtraction transfer")
 
 if args.collections:
     logger.info("Begin collections (kvstore definition) transfer")
+    collectionsResults = {}
     if src_app_list:
-        collectionsResults = {}
-        collectionsResultsList = []
         for srcApp in src_app_list:
-            collectionsResultsTemp = collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            collectionsResultsList.append(collectionsResultsTemp)
-        for collectionsResultsDict in collectionsResultsList:
-            collectionsResults.update(collectionsResultsDict)
+            collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, collectionsResults)
     else:
-        collectionsResults = collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, collectionsResults)
     logger.info("End collections (kvstore definition) transfer")
 
 if args.lookupDefinition:
     logger.info("Begin lookupDefinitions transfer")
+    lookupDefinitionsResults = {}
     if src_app_list:
-        lookupDefinitionsResults = {}
-        lookupDefinitionsResultsList = []
         for srcApp in src_app_list:
-            lookupDefinitionsResultsTemp = lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            lookupDefinitionsResultsList.append(lookupDefinitionsResultsTemp)
-        for lookupDefinitionsResultsDict in lookupDefinitionsResultsList:
-            lookupDefinitionsResults.update(lookupDefinitionsResultsDict)
+            lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, lookupDefinitionsResults)
     else:
-        lookupDefinitionsResults = lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, lookupDefinitionsResults)
     logger.info("End lookupDefinitions transfer")
 
 if args.automaticLookup:
     logger.info("Begin automaticLookup transfer")
+    automaticLookupsResults = {}
     if src_app_list:
-        automaticLookupsResults = {}
-        automaticLookupsResultsList = []
         for srcApp in src_app_list:
-            automaticLookupsResultsTemp = automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            automaticLookupsResultsList.append(automaticLookupsResultsTemp)
-        for automaticLookupsResultsDict in automaticLookupsResultsList:
-            automaticLookupsResults.update(automaticLookupsResultsDict)
+            automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, automaticLookupsResults)
     else:
-        automaticLookupsResults = automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, automaticLookupsResults)
     logger.info("End automaticLookup transfer")
 
 if args.times:
     logger.info("Begin times (conf-times) transfer")
+    timesResults = {}
     if src_app_list:
-        timesResults = {}
-        timesResultsList = []
         for srcApp in src_app_list:
-            timesResultsTemp = times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            timesResultsList.append(timesResultsTemp)
-        for timesResultsDict in timesResultsList:
-            timesResults.update(timesResultsDict)
+            times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, timesResults)
     else:    
-        timesResults = times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, timesResults)
     logger.info("End times (conf-times) transfer")
 
 if args.viewstates:
     logger.info("Begin viewstates transfer")
+    viewstatesResults = {}
     if src_app_list:
-        viewstatesResults = {}
-        viewstatesResultsList = []
         for srcApp in src_app_list:
-            viewstatesResultsTemp = viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            viewstatesResultsList.append(viewstatesResultsTemp)
-        for viewstatesResultsDict in viewstatesResultsList:
-            viewstatesResults.update(viewstatesResultsDict)
+            viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, viewstatesResults)
     else:    
-        viewstatesResults = viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, viewstatesResults)
     logger.info("End viewstates transfer")
     
 if args.panels:
     logger.info("Begin pre-built dashboard panels transfer")
+    panelsResults = {}
     if src_app_list:
-        panelsResults = {}
-        panelsResultsList = []
         for srcApp in src_app_list:
-            panelsResultsTemp = panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            panelsResultsList.append(panelsResultsTemp)
-        for panelsResultsDict in panelsResultsList:
-            panelsResults.update(panelsResultsDict)
-    else:    
-        panelsResults = panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, panelsResults)
+    else: 
+        panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, panelsResults)
     logger.info("End pre-built dashboard panels transfer")
     
 if args.datamodels:
     logger.info("Begin datamodels transfer")
     if src_app_list:
         datamodelResults = {}
-        datamodelResultsList = []
         for srcApp in src_app_list:
-            datamodelResultsTemp = datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            datamodelResultsList.append(datamodelResultsTemp)
-        for datamodelResultsDict in datamodelResultsList:
-            datamodelResults.update(datamodelResultsDict)
+            datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, datamodelResults)
     else:    
-        datamodelResults = datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, datamodelResults)
     logger.info("End datamodels transfer")
 
 if args.dashboards:
     logger.info("Begin dashboards transfer")
+    dashboardResults = {}
     if src_app_list:
-        dashboardResults = {}
-        dashboardResultsList = []
         for srcApp in src_app_list:
-            dashboardResultsTemp = dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            dashboardResultsList.append(dashboardResultsTemp)
-        for dashboardResultsDict in dashboardResultsList:
-            dashboardResults.update(dashboardResultsDict)
-    else:    
-        dashboardResults = dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, dashboardResults)
+    else:
+        dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, dashboardResults)
     logger.info("End dashboards transfer")
 
 if args.savedsearches:
     logger.info("Begin savedsearches transfer")
+    savedSearchResults = {}
     if src_app_list:
-        savedSearchResults = {}
-        savedSearchResultsList = []
         for srcApp in src_app_list:
-            savedSearchResultsTemp = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.overrideMode, args.overrideAlwaysMode)
-            savedSearchResultsList.append(savedSearchResultsTemp)
-        for savedSearchResultsDict in savedSearchResultsList:
-            savedSearchResults.update(savedSearchResultsDict)
+            savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.overrideMode, args.overrideAlwaysMode, savedSearchResults)
     else:
-        savedSearchResults = savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.overrideMode, args.overrideAlwaysMode)
+        savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.overrideMode, args.overrideAlwaysMode, savedSearchResults)
     logger.info("End savedsearches transfer")
 
 if args.workflowActions:
     logger.info("Begin workflowActions transfer")
+    workflowActionsResults = {}
     if src_app_list:
-        workflowActionsResults = {}
-        workflowActionsResultsList = []
         for srcApp in src_app_list:
-            workflowActionsResultsTemp = workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            workflowActionsResultsList.append(workflowActionsResultsTemp)
-        for workflowActionsResultsDict in workflowActionsResultsList:
-            workflowActionsResults.update(workflowActionsResultsDict)
+            workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, workflowActionsResults)
     else:
-        workflowActionsResults = workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, workflowActionsResults)
     logger.info("End workflowActions transfer")
 
 if args.sourcetypeRenaming:
     logger.info("Begin sourcetypeRenaming transfer")
+    sourcetypeRenamingResults = {}
     if src_app_list:
-        sourcetypeRenamingResults = {}
-        sourcetypeRenamingResultsList = []
         for srcApp in src_app_list:
-            sourcetypeRenamingResultsTemp = sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            sourcetypeRenamingResultsList.append(sourcetypeRenamingResultsTemp)
-        for sourcetypeRenamingResultsDict in sourcetypeRenamingResultsList:
-            sourcetypeRenamingResults.update(sourcetypeRenamingResultsDict)
-    else:    
-        sourcetypeRenamingResults = sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, sourcetypeRenamingResults)
+    else:
+        sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, sourcetypeRenamingResults)
     logger.info("End sourcetypeRenaming transfer")
 
 if args.navMenu:
     logger.info("Begin navMenu transfer")
+    navMenuResults = {}
     if src_app_list:
-        navMenuResults = {}
-        navMenuResultsList = []
         for srcApp in src_app_list:
-            navMenuResultsTemp = navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
-            navMenuResultsList.append(navMenuResultsTemp)
-        for navMenuResultsDict in navMenuResultsList:
-            navMenuResults.update(navMenuResultsDict)
-    else:    
-        navMenuResults = navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+            navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, navMenuResults)
+    else:
+        navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, navMenuResults)
     logger.info("End navMenu transfer")
 
 ###########################
