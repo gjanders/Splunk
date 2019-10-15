@@ -42,7 +42,7 @@ What does this script do?
 
  Index sizing (maxTotalDataSizeMB)
    * Based on the last X days of license usage (configurable) and the storage compression ratio based on the most recent introspection data 
-     and multiplied by the number of days before frozen, multiplied by contingency and divided by number of indexers to determine value per indexer
+     and multiplied by the number of days before frozen, multiplied by contingency, rep factor multiplier and divided by number of indexers to determine value per indexer
    * If the index has recent license usage *but* it does not match the minimum number of days we require for sizing purposes we do not size the index
      this covers, for example an index that has 2 days of license usage and it's too early to correctly re-size it
    * If the index has no data on the filesystem no tuning is done but this is recorded in the log (either a new index or an unused index)
@@ -119,8 +119,8 @@ parser.add_argument('-numHoursPerBucket', help='Aim for approximate number of ho
 #Add 20% contingency to the result for buckets
 parser.add_argument('-bucketContingency', help='Contingency multiplier for buckets', default=1.2, type=float)
 
-#Add 35% contingency to the result for index sizing purposes
-parser.add_argument('-sizingContingency', help='Contingency multiplier for index sizing', default=1.35, type=float)
+#Add 25% contingency to the result for index sizing purposes
+parser.add_argument('-sizingContingency', help='Contingency multiplier for index sizing', default=1.25, type=float)
 
 #What % do we leave spare in our indexes before we increase the size? 20% for now
 #Note an additional safety that checks the max on disk size per index can also override this
@@ -155,6 +155,10 @@ parser.add_argument('-minSizeToCalculate', help="Minimum bucket size before calu
 parser.add_argument('-excludedDirs', help="List of default directories to exclude from been listed in the deletion section", default='kvstore,.snapshots,lost+found,authDb,hashDb,persistentstorage')
 #If the compression ratio is above this level we throw a warning
 parser.add_argument('-upperCompRatioLevel', help="Comp ratio limit where a warning in thrown rather than calculation done on the bucket sizing if this limit is exceeded", default=6.0, type=float)
+
+#Multiply license usage by this multiplier to take into account index replication
+parser.add_argument('-repFactorMultiplier', help='Multiply by rep factor (for example if 2 copies of raw/indexed data, 2.0 works', default=2.0, type=float)
+
 parser.add_argument('-debugMode', help='(optional) turn on DEBUG level logging (defaults to INFO)', action='store_true')
 parser.add_argument('-username', help='Username to login to the remote Splunk instance with', required=True)
 parser.add_argument('-password', help='Password to login to the remote Splunk instance with', required=True)
@@ -335,7 +339,7 @@ def indexTuningPresteps(utility, indexList, indexIgnoreList, earliestLicense, la
     #        del indexList[indexName]
 
 #Functions exlusive to bucket sizing
-def runBucketSizing(utility, indexList, indexNameRestriction, indexLimit, numHoursPerBucket, bucketContingency, upperCompRatioLevel, minSizeToCalculate, numberOfIndexers):
+def runBucketSizing(utility, indexList, indexNameRestriction, indexLimit, numHoursPerBucket, bucketContingency, upperCompRatioLevel, minSizeToCalculate, numberOfIndexers, repFactorMultiplier):
     todaysDate = datetime.datetime.now().strftime("%Y-%m-%d")
 
     counter = 0
@@ -409,7 +413,7 @@ def runBucketSizing(utility, indexList, indexNameRestriction, indexLimit, numHou
             #If the data is poorly parsed (e.g. dates go well into the past) then the MB/day might be greater than what appears via dbinspect
             #and therefore we might need to sanity check this based on license usage * storage ratio / number of indexers / (potential hot buckets)
             #we add contingency to this as well
-            altBucketSizeCalc = ((indexList[indexName]["maxLicenseUsagePerDay"] * storageRatio) / numberOfIndexers) / maxHotBuckets 
+            altBucketSizeCalc = ((indexList[indexName]["maxLicenseUsagePerDay"] * storageRatio * repFactorMultiplier) / numberOfIndexers) / maxHotBuckets 
             altBucketSizeCalc = altBucketSizeCalc * bucketContingency
             
             if (altBucketSizeCalc > recommendedBucketSize):
@@ -477,7 +481,7 @@ def runBucketSizing(utility, indexList, indexNameRestriction, indexLimit, numHou
 
     return indexesRequiringChanges, confFilesRequiringChanges
 
-def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberOfIndexers, lowerIndexSizeLimit, sizingContingency, minimumDaysOfLicenseForSizing, percBeforeAdjustment, doNotLoseData, undersizingContingency, smallBucketSize, skipProblemIndexes, indexesRequiringChanges, confFilesRequiringChanges):
+def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberOfIndexers, lowerIndexSizeLimit, sizingContingency, minimumDaysOfLicenseForSizing, percBeforeAdjustment, doNotLoseData, undersizingContingency, smallBucketSize, skipProblemIndexes, indexesRequiringChanges, confFilesRequiringChanges, repFactorMultiplier):
     todaysDate = datetime.datetime.now().strftime("%Y-%m-%d")
 
     counter = 0
@@ -554,7 +558,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
         
         if not summaryIndex:
             #calculate the index size usage based on recent license usage data and divide by the number of indexers we have
-            calcSize = (storageRatio * avgLicenseUsagePerDay * frozenTimePeriodInDays)/numberOfIndexers
+            calcSize = (storageRatio * avgLicenseUsagePerDay * frozenTimePeriodInDays * repFactorMultiplier)/numberOfIndexers
         
         #This index has data but no incoming data during the measurement period (via the license logs), capping the index at current size + contingency
         #or the estimated size if we have it
@@ -588,7 +592,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                 if summaryIndex:
                     estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / (calcSize * sizingContingency)))
                 else:
-                    estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * sizingContingency)/numberOfIndexers)))
+                    estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * sizingContingency * repFactorMultiplier)/numberOfIndexers)))
             
         #We leave a bit of room spare just in case by adding a contingency sizing here
         calcSize = int(round(calcSize*sizingContingency))
@@ -662,20 +666,20 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
 
                 #Skip the zero size estimated where storageRatio == 0.0 or license usage is zero
                 if (storageRatio != 0.0 and avgLicenseUsagePerDay != 0):
-                    estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * sizingContingency)/numberOfIndexers)))
+                    estimatedDaysForCurrentSize = int(round(maxTotalDataSizeMB / ((storageRatio * avgLicenseUsagePerDay * sizingContingency * repFactorMultiplier)/numberOfIndexers)))
                 
                 #If the commented size would result in data loss or an undersized index and we have a comment about this it's ok to keep it undersized
                 if (usageBasedCalculatedSize > configuredSizeFromCommentMaxTotalDSMB):
                     if doNotLoseData:
                         indexList[indexName]['calcMaxTotalDataSizeMB'] = usageBasedCalculatedSize
-                        logger.info("Index: %s has more data than expected and has a comment-based sizing estimate of %s however average is %s, current size would fit %s days, frozenTimeInDays %s, increasing the size of this index, oldest data found is %s days old" % (indexName, configuredSizePerDay, avgLicenseUsagePerDay, estimatedDaysForCurrentSize, frozenTimePeriodInDays, earliestTime))
+                        logger.info("Index: %s has more data than expected and has a comment-based sizing estimate of %s however average is %s, current size would fit %s days, frozenTimeInDays %s, increasing the size of this index, oldest data found is %s days old, repFactorMultiplier %s" % (indexName, configuredSizePerDay, avgLicenseUsagePerDay, estimatedDaysForCurrentSize, frozenTimePeriodInDays, earliestTime, repFactorMultiplier))
                     else:
-                        logger.warn("Index: %s has more data than expected and has a comment-based sizing estimate of %s however average is %s, data loss is likely after %s days, frozenTimeInDays %s, oldest data found is %s days old" % (indexName, configuredSizePerDay, avgLicenseUsagePerDay, estimatedDaysForCurrentSize, frozenTimePeriodInDays, earliestTime))
+                        logger.warn("Index: %s has more data than expected and has a comment-based sizing estimate of %s however average is %s, data loss is likely after %s days, frozenTimeInDays %s, oldest data found is %s days old, repFactorMultiplier %s" % (indexName, configuredSizePerDay, avgLicenseUsagePerDay, estimatedDaysForCurrentSize, frozenTimePeriodInDays, earliestTime, repFactorMultiplier))
                 
                 #If the newly calculated size has increased compared to previous size multiplied by the undersizing contingency
                 elif (estimatedDaysForCurrentSize < frozenTimePeriodInDays):
                     #We will increase the sizing for this index
-                    logger.info("Index: %s requires more sizing currently %s new sizing %s, commentedSizePerDay %s, frozenTimeInDays %s, average usage per day %s, oldest data found is %s days old" % (indexName, maxTotalDataSizeMB, configuredSizeFromCommentMaxTotalDSMB, configuredSizePerDay, frozenTimePeriodInDays, avgLicenseUsagePerDay, earliestTime))
+                    logger.info("Index: %s requires more sizing currently %s new sizing %s, commentedSizePerDay %s, frozenTimeInDays %s, average usage per day %s, oldest data found is %s days old, repFactorMultiplier %s" % (indexName, maxTotalDataSizeMB, configuredSizeFromCommentMaxTotalDSMB, configuredSizePerDay, frozenTimePeriodInDays, avgLicenseUsagePerDay, earliestTime, repFactorMultiplier))
 
                 #At some point this index was manually sized to be bigger than the comment, fix it now, this may drop it below the expected frozen time period in days
                 if (maxTotalDataSizeMB > configuredSizeFromCommentMaxTotalDSMB):
@@ -689,9 +693,9 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                         
                         #We warn if we drop below the frozen time period in seconds and do not warn if we are staying above it
                         if (estimatedDaysForCurrentSize < frozenTimePeriodInDays):
-                            logger.warn("Index: %s comment-based sizing estimate of %s, %s comp ratio perc, current size of %s, new size estimate of %s, frozenTimeInDays %s, estimated days %s, average usage per day %s, this index will be decreased in size, oldest data found is %s days old" % (indexName, configuredSizePerDay, storageRatio, maxTotalDataSizeMB, configuredSizeFromCommentMaxTotalDSMB, frozenTimePeriodInDays, estimatedDaysForCurrentSize, avgLicenseUsagePerDay, earliestTime))
+                            logger.warn("Index: %s comment-based sizing estimate of %s, %s comp ratio perc, current size of %s, new size estimate of %s, frozenTimeInDays %s, estimated days %s, average usage per day %s, this index will be decreased in size, oldest data found is %s days old, repFactorMultiplier %s" % (indexName, configuredSizePerDay, storageRatio, maxTotalDataSizeMB, configuredSizeFromCommentMaxTotalDSMB, frozenTimePeriodInDays, estimatedDaysForCurrentSize, avgLicenseUsagePerDay, earliestTime, repFactorMultiplier))
                         else:
-                            logger.info("Index: %s comment-based sizing estimate of %s, %s comp ratio perc, current size of %s, new size estimate of %s, frozenTimeInDays %s, estimated days %s, average usage per day %s, this index will be decreased in size, oldest data found is %s days old" % (indexName, configuredSizePerDay, storageRatio, maxTotalDataSizeMB, configuredSizeFromCommentMaxTotalDSMB, frozenTimePeriodInDays, estimatedDaysForCurrentSize, avgLicenseUsagePerDay, earliestTime))
+                            logger.info("Index: %s comment-based sizing estimate of %s, %s comp ratio perc, current size of %s, new size estimate of %s, frozenTimeInDays %s, estimated days %s, average usage per day %s, this index will be decreased in size, oldest data found is %s days old, repFactorMultiplier %s" % (indexName, configuredSizePerDay, storageRatio, maxTotalDataSizeMB, configuredSizeFromCommentMaxTotalDSMB, frozenTimePeriodInDays, estimatedDaysForCurrentSize, avgLicenseUsagePerDay, earliestTime, repFactorMultiplier))
           
         requiresChange = False
 
@@ -729,7 +733,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                 #depending on policy we can either not re-size this *or* we can just re-size it to fix the data we received, for now using re-sizing based on what we have recieved
                 #rather than the original estimate
                 if (oversized == True):
-                    logger.info("Index: %s undersized but has %s days of license data *but* index sizing comment advises index oversized, increasing size, minimum days for sizing is %s, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, earliestTime is %s" % (indexName, licenseDataFirstSeen, minimumDaysOfLicenseForSizing, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, earliestTime))
+                    logger.info("Index: %s undersized but has %s days of license data *but* index sizing comment advises index oversized, increasing size, minimum days for sizing is %s, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, earliestTime is %s, repFactorMultiplier %s" % (indexName, licenseDataFirstSeen, minimumDaysOfLicenseForSizing, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, earliestTime, repFactorMultiplier))
                     oversized = False
                     
                 adjustIfAbove = maxTotalDataSizeMB * undersizingContingency
@@ -744,7 +748,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                 else:
                     logger.info("Index: %s, (index sizing only) is undersized however an adjustment is only going to occur once the newly calculated size is above %s, currently it is %s" % (indexName, adjustIfAbove, indexList[indexName]['calcMaxTotalDataSizeMB']))
             #Record this in our tuning log
-            logger.info("Index: %s undersized, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, license data first seen %s days ago, earliestTime is %s" % (indexName, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, licenseDataFirstSeen, earliestTime))
+            logger.info("Index: %s undersized, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, license data first seen %s days ago, earliestTime is %s, repFactorMultiplier %s" % (indexName, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, licenseDataFirstSeen, earliestTime, repFactorMultiplier))
 
         #Is this index oversized in our settings
         if (oversized == True):
@@ -761,7 +765,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
 
             #Sanity check to ensure our tuned size doesn't drop below our largest on-disk size
             if (calcMaxTotalDataSizeMB < largestOnDiskSize):
-                logger.warn("Index: %s oversized, calculated size %s less than max on-disk size %s, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, earliestTime is %s" % (indexName, calcMaxTotalDataSizeMB, largestOnDiskSize, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, earliestTime))
+                logger.warn("Index: %s oversized, calculated size %s less than max on-disk size %s, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, earliestTime is %s, repFactorMultiplier %s" % (indexName, calcMaxTotalDataSizeMB, largestOnDiskSize, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, earliestTime, repFactorMultiplier))
                 logger.warn("Index: %s oversized, refusing to trigger immediate data loss and changing back to largestOnDiskSize %s from %s" % (indexName, largestOnDiskSize, calcMaxTotalDataSizeMB))
                 
                 indexList[indexName]['calcMaxTotalDataSizeMB'] = largestOnDiskSize
@@ -785,7 +789,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                     requiresChange = "sizing"
             
             #Record this in our log
-            logger.info("Index: %s oversized, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, license data first seen %s days ago, earliestTime is %s" % (indexName, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, licenseDataFirstSeen, earliestTime))
+            logger.info("Index: %s oversized, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, license data first seen %s days ago, earliestTime is %s, repFactorMultiplier %s" % (indexName, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, licenseDataFirstSeen, earliestTime, repFactorMultiplier))
 
         #If we haven't yet added a sizing comment and we need one, this only happens during the initial runs
         #after this all indexes should have comments and this shouldn't run
@@ -859,7 +863,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                 logger.debug("indexName: %s, conf file %s now requires changes" % (indexName, confFile))
      
         #The debugging statement just in case something goes wrong and we have to determine why (the everything statement)
-        logger.debug("Index %s, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, calculated size usage (after overrides) %s, license data first seen %s, oldest data found is %s days old" % (indexName, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, indexList[indexName]['calcMaxTotalDataSizeMB'], licenseDataFirstSeen, earliestTime))
+        logger.debug("Index %s, frozenTimePeriodInDays %s, maxTotalDataSizeMB %s , recentLicensePerDayInMB %s, EstimatedSizeFromComment %s, CompMultiplier %s, CalculatedSizeRequiredPerIndexer %s, EstimatedDaysForCurrentSizing %s, calculated size usage (after overrides) %s, license data first seen %s, oldest data found is %s days old, repFactorMultiplier %s" % (indexName, frozenTimePeriodInDays, maxTotalDataSizeMB, avgLicenseUsagePerDay, configuredSizePerDay, storageRatio, calcSize, estimatedDaysForCurrentSize, indexList[indexName]['calcMaxTotalDataSizeMB'], licenseDataFirstSeen, earliestTime, repFactorMultiplier))
 
         if indexList[indexName]['calcMaxTotalDataSizeMB'] == False:
             calcSize = 0
@@ -880,10 +884,10 @@ if args.bucketTuning or args.indexSizing:
     confFilesRequiringChanges = []
 
     if args.bucketTuning:
-        (indexesRequiringChanges, confFilesRequiringChanges) = runBucketSizing(utility, indexList, args.indexNameRestriction, args.indexLimit, args.numHoursPerBucket, args.bucketContingency, args.upperCompRatioLevel, args.minSizeToCalculate, args.numberOfIndexers)
+        (indexesRequiringChanges, confFilesRequiringChanges) = runBucketSizing(utility, indexList, args.indexNameRestriction, args.indexLimit, args.numHoursPerBucket, args.bucketContingency, args.upperCompRatioLevel, args.minSizeToCalculate, args.numberOfIndexers, args.repFactorMultiplier)
 
     if args.indexSizing:
-        (confFilesRequiringChanges, indexesRequiringChanges, calcSizeTotal) = runIndexSizing(utility, indexList, args.indexNameRestriction, args.indexLimit, args.numberOfIndexers, args.lowerIndexSizeLimit, args.sizingContingency, args.minimumDaysOfLicenseForSizing, args.percBeforeAdjustment, args.doNotLoseData, args.undersizingContingency, args.smallBucketSize, args.skipProblemIndexes, indexesRequiringChanges, confFilesRequiringChanges)
+        (confFilesRequiringChanges, indexesRequiringChanges, calcSizeTotal) = runIndexSizing(utility, indexList, args.indexNameRestriction, args.indexLimit, args.numberOfIndexers, args.lowerIndexSizeLimit, args.sizingContingency, args.minimumDaysOfLicenseForSizing, args.percBeforeAdjustment, args.doNotLoseData, args.undersizingContingency, args.smallBucketSize, args.skipProblemIndexes, indexesRequiringChanges, confFilesRequiringChanges, args.repFactorMultiplier)
 
     if args.outputTempFilesWithTuning:
         indextuning_indextempoutput.outputIndexFilesIntoTemp(logging, confFilesRequiringChanges, indexList, args.workingPath, indexesRequiringChanges)
