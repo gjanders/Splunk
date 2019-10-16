@@ -481,7 +481,7 @@ def runBucketSizing(utility, indexList, indexNameRestriction, indexLimit, numHou
 
     return indexesRequiringChanges, confFilesRequiringChanges
 
-def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberOfIndexers, lowerIndexSizeLimit, sizingContingency, minimumDaysOfLicenseForSizing, percBeforeAdjustment, doNotLoseData, undersizingContingency, smallBucketSize, skipProblemIndexes, indexesRequiringChanges, confFilesRequiringChanges, repFactorMultiplier):
+def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberOfIndexers, lowerIndexSizeLimit, sizingContingency, minimumDaysOfLicenseForSizing, percBeforeAdjustment, doNotLoseData, undersizingContingency, smallBucketSize, skipProblemIndexes, indexesRequiringChanges, confFilesRequiringChanges, repFactorMultiplier, upperCompRatioLevel):
     todaysDate = datetime.datetime.now().strftime("%Y-%m-%d")
 
     counter = 0
@@ -516,6 +516,12 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
         avgLicenseUsagePerDay = indexList[indexName]['avgLicenseUsagePerDay']
         licenseDataFirstSeen = indexList[indexName]["firstSeen"]
 
+        #If the compression ratio is unusually large warn but continue for now
+        if (storageRatio > upperCompRatioLevel):
+            logger.info("Index: %s, returned index compression ratio %s , this is above the expected max of %s, this may break cal
+culations in the script capping it at %s" % (indexName, storageRatio, upperCompRatioLevel, upperCompRatioLevel))
+            storageRatio = upperCompRatioLevel
+        
         summaryIndex = False
         #Zero license usage, this could be a summary index
         if avgLicenseUsagePerDay == 0:
@@ -546,7 +552,7 @@ def runIndexSizing(utility, indexList, indexNameRestriction, indexLimit, numberO
                     calcSize = largestOnDiskSize
                 else:
                     #Calculate the size per indexer as approx currentSize * contingency value * change per day * amount of time the data is kept in summary
-                    calcSize = curMaxTotalSize + (summary_usage_change_per_day * frozenTimePeriodInDays)
+                    calcSize = largestOnDiskSize + (sizingContingency * summary_usage_change_per_day * frozenTimePeriodInDays)
         
         #Company specific field here, the commented size per day in the indexes.conf file
         configuredSizePerDay = -1
@@ -887,7 +893,7 @@ if args.bucketTuning or args.indexSizing:
         (indexesRequiringChanges, confFilesRequiringChanges) = runBucketSizing(utility, indexList, args.indexNameRestriction, args.indexLimit, args.numHoursPerBucket, args.bucketContingency, args.upperCompRatioLevel, args.minSizeToCalculate, args.numberOfIndexers, args.repFactorMultiplier)
 
     if args.indexSizing:
-        (confFilesRequiringChanges, indexesRequiringChanges, calcSizeTotal) = runIndexSizing(utility, indexList, args.indexNameRestriction, args.indexLimit, args.numberOfIndexers, args.lowerIndexSizeLimit, args.sizingContingency, args.minimumDaysOfLicenseForSizing, args.percBeforeAdjustment, args.doNotLoseData, args.undersizingContingency, args.smallBucketSize, args.skipProblemIndexes, indexesRequiringChanges, confFilesRequiringChanges, args.repFactorMultiplier)
+        (confFilesRequiringChanges, indexesRequiringChanges, calcSizeTotal) = runIndexSizing(utility, indexList, args.indexNameRestriction, args.indexLimit, args.numberOfIndexers, args.lowerIndexSizeLimit, args.sizingContingency, args.minimumDaysOfLicenseForSizing, args.percBeforeAdjustment, args.doNotLoseData, args.undersizingContingency, args.smallBucketSize, args.skipProblemIndexes, indexesRequiringChanges, confFilesRequiringChanges, args.repFactorMultiplier, args.upperCompRatioLevel)
 
     if args.outputTempFilesWithTuning:
         indextuning_indextempoutput.outputIndexFilesIntoTemp(logging, confFilesRequiringChanges, indexList, args.workingPath, indexesRequiringChanges)
