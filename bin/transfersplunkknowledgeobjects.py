@@ -2,7 +2,7 @@ import requests
 import xml.etree.ElementTree as ET
 import logging
 from logging.config import dictConfig
-import urllib
+import six.moves.urllib.request, six.moves.urllib.parse, six.moves.urllib.error
 import argparse
 import json
 import copy
@@ -221,7 +221,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                     
                     #Backup the original name if we override it, override works fine for creation
                     #but updates require the original name
-                    if 'name' in aliasAttributes.values():
+                    if 'name' in list(aliasAttributes.values()):
                         info["origName"] = title
                     
                 elif innerChild.tag.endswith("updated"):
@@ -284,7 +284,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                             attribName = theAttribute.attrib['name']
                             
                             #Under some circumstances we want the attribute and contents but we want to call it a different name...
-                            if aliasAttributes.has_key(attribName):
+                            if attribName in aliasAttributes:
                                 attribName = aliasAttributes[attribName]
                             
                             #If it's disabled *and* we don't want disabled objects we can determine this here
@@ -295,7 +295,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                                 
                             #Field extractions change from "Uses transform" to "REPORT" And "Inline" to "EXTRACTION" for some strange reason...
                             #therefore we have a list of attribute values that we deal with here which get renamed to the provided values
-                            if valueAliases.has_key(theAttribute.text):
+                            if theAttribute.text in valueAliases:
                                 theAttribute.text = valueAliases[theAttribute.text]
                             
                             logger.debug("%s of type %s found key/value of %s=%s in app context %s" % (info["name"], type, attribName, theAttribute.text, app))
@@ -306,7 +306,9 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                                 attribName = "accelerated_fields" + attribName[17:]
                             
                             #Hack to deal with datamodel tables not working as expected
-                            if attribName == "description" and type=="datamodels" and info.has_key("dataset.type") and info["dataset.type"] == "table":
+                            if attribName == "description" and type=="datamodels" and "dataset.type" in info and info["dataset.type"] == "table":
+                                #For an unknown reason the table datatype has extra fields in the description which must be removed
+                                #however we have to find them first...
                                 #For an unknown reason the table datatype has extra fields in the description which must be removed
                                 #however we have to find them first...
                                 res = json.loads(theAttribute.text)
@@ -356,16 +358,16 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                         info["name"] = newName
                 #Some attributes are not used to create a new version so we remove them...(they may have been used above first so we kept them until now)
                 for attribName in fieldIgnoreList:
-                    if info.has_key(attribName):
+                    if attribName in info:
                         del info[attribName]
                 
                 #Add this to the infoList
                 sharing = info["sharing"]
-                if not infoList.has_key(sharing):
+                if sharing not in infoList:
                     infoList[sharing] = []
                     
                 #REST API does not support the creation of null queue entries as tested in 7.0.5 and 7.2.1, these are also unused on search heads anyway so ignoring these with a warning
-                if type == "fieldtransformations" and info.has_key("FORMAT") and info["FORMAT"] == "nullQueue":
+                if type == "fieldtransformations" and "FORMAT" in info and info["FORMAT"] == "nullQueue":
                     logger.warn("Dropping the transfer of %s of type %s in app context %s with owner %s because nullQueue entries cannot be created via REST API (and they are not required in search heads)" % (info["name"], type, app, info["owner"]))
                 else:
                     infoList[sharing].append(info)
@@ -373,25 +375,25 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
     
                 #If we are migrating but leaving the old app enabled in a previous environment we may not want to leave the report and/or alert enabled
                 if disableAlertsOrReportsOnMigration and type == "savedsearches":
-                    if info.has_key("disabled") and info["disabled"] == "0" and info.has_key("alert_condition"):
+                    if "disabled" in info and info["disabled"] == "0" and "alert_condition" in info:
                         logger.info("%s of type %s (alert) in app %s with owner %s was enabled but disableAlertsOrReportOnMigration set, setting to disabled" % (type, info["name"], app, info["owner"]))
                         info["disabled"] = 1
-                    elif info.has_key("is_scheduled") and not info.has_key("alert_condition") and info["is_scheduled"] == "1":
+                    elif "is_scheduled" in info and "alert_condition" not in info and info["is_scheduled"] == "1":
                         info["is_scheduled"] = 0
                         logger.info("%s of type %s (scheduled report) in app %s with owner %s was enabled but disableAlertsOrReportOnMigration set, setting to disabled" % (type, info["name"], app, info["owner"]))
     app = destApp
         
     #Cycle through each one we need to migrate, we do global/app/user as users can duplicate app level objects with the same names
     #but we create everything at user level first then re-own it so global/app must happen first
-    if infoList.has_key("global"):
+    if "global" in infoList:
         logger.debug("Now running runQueriesPerList with knowledge objects of type %s with global level sharing in app %s" % (type, app))
         runQueriesPerList(infoList["global"], destOwner, type, override, app, splunk_rest_dest, endpoint, actionResults, overrideAlways)
 
-    if infoList.has_key("app"):
+    if "app" in infoList:
         logger.debug("Now running runQueriesPerList with knowledge objects of type %s with app level sharing in app %s" % (type, app))
         runQueriesPerList(infoList["app"], destOwner, type, override, app, splunk_rest_dest, endpoint, actionResults, overrideAlways)
         
-    if infoList.has_key("user"):
+    if "user" in infoList:
         logger.debug("Now running runQueriesPerList with knowledge objects of type %s with user (private) level sharing in app %s" % (type, app))
         runQueriesPerList(infoList["user"], destOwner, type, override, app, splunk_rest_dest, endpoint, actionResults, overrideAlways)
         
@@ -469,7 +471,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                     logger.debug("name %s of type %s in app context %s, found the object with this name in sharingLevel %s and appContext %s, updated time of %s" % (name, type, app, sharingLevel, appContext, updated))
         #Hack to handle the times (conf-times) not including required attributes for creation in existing entries
         #not sure how this happens but it fails to create in 7.0.5 but works fine in 7.2.x, fixing for the older versions
-        if type=="times (conf-times)" and not payload.has_key("is_sub_menu"):
+        if type=="times (conf-times)" and "is_sub_menu" not in payload:
             payload["is_sub_menu"] = "0"
         
         deletionURL = None
@@ -501,7 +503,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                             creationSuccessRes = True
                 elif child.tag.endswith("messages"):
                     for innerChild in child:
-                        if innerChild.tag.endswith("msg") and innerChild.attrib["type"]=="ERROR" or innerChild.attrib.has_key("WARN"):
+                        if innerChild.tag.endswith("msg") and innerChild.attrib["type"]=="ERROR" or "WARN" in innerChild.attrib:
                             logger.warn("%s of type %s in app %s had a warn/error message of '%s' owner of %s" % (name, type, app, innerChild.text, owner))
                             #Sometimes the object appears to be create but is unusable which is annoying, at least provide the warning to the logs
                             #and record it in the failure list for investigation
@@ -730,7 +732,7 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
             
                 #Add this to the infoList
                 sharing = macroInfo["sharing"]
-                if not macros.has_key(sharing):
+                if sharing not in macros:
                     macros[sharing] = []
                 macros[sharing].append(macroInfo)
                 logger.info("Recording macro info for %s in app %s with owner %s sharing level of %s" % (macroInfo["name"], app, macroInfo["owner"], macroInfo["sharing"]))
@@ -739,15 +741,15 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
 
     #Cycle through each one we need to migrate, we do globa/app/user as users can duplicate app level objects with the same names
     #but we create everything at user level first then re-own it so global/app must happen first
-    if macros.has_key("global"):
+    if "global" in macros:
         logger.debug("Now running macroCreation with knowledge objects of type macro with global level sharing in app %s" % (app))
         macroCreation(macros["global"], destOwner, app, splunk_rest_dest, macroResults, override, overrideAlways)
 
-    if macros.has_key("app"):
+    if "app" in macros:
         logger.debug("Now running macroCreation with knowledge objects of type macro with app level sharing in app %s" % (app))
         macroCreation(macros["app"], destOwner, app, splunk_rest_dest, macroResults, override, overrideAlways)
         
-    if macros.has_key("user"):
+    if "user" in macros:
         logger.debug("Now running macroCreation with knowledge objects of type macro with user (private) level sharing in app %s" % (app))
         macroCreation(macros["user"], destOwner, app, splunk_rest_dest, macroResults, override, overrideAlways)
 
