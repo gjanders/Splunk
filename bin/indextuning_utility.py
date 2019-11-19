@@ -235,7 +235,12 @@ class utility:
 
                         # Record the size in MB
                         logger.debug("index=%s found size=%s, unit=%s, calculated=%s" % (index_name, size, unit, calc_size))
-                        indexes[index_name].size_per_day_in_mb = calc_size
+                        if hasattr(indexes[index_name], "size_per_day_in_mb"):
+                            logger.info("index=%s found size=%s, unit=%s, calculated=%s, but this index already has calculated size of calculated=%s, not changing it"
+                                        % (index_name, size, unit, calc_size, indexes[index_name].size_per_day_in_mb))
+                        else:
+                            indexes[index_name].size_per_day_in_mb = calc_size
+
     ################
     #
     # End environment specific
