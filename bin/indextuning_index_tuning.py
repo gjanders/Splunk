@@ -215,6 +215,18 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
         # This flag is set if the index is undersized on purpose (i.e. we have a setting that says to set it below the limit where we lose data
         donotIncrease = False
 
+        min_req_size = int(index_list[index_name].max_hot_buckets) * max_data_size
+        if index_list[index_name].calc_max_total_data_size_mb < min_req_size:
+            logger.warn("index=%s, calc_max_total_data_size_mb=%s less than min_req_size=%s (based on bucket_size=%s*max_hot_buckets=%s), "\
+                " frozen_time_period_in_days=%s, max_total_data_size_mb=%s , "\
+                "avg_license_usage_per_day=%s, sizing_comment=%s, index_comp_ratio=%s, calculated_size=%s, estimated_days_for_current_size=%s, "\
+                "oldest_data_found=%s, rep_factor_multiplier=%s, changing size back to %s"
+                % (index_name, calc_max_total_data_size_mb, min_req_size, max_data_size, index_list[index_name].max_hot_buckets, frozen_time_period_in_days,
+                   max_total_data_size_mb, avg_license_usage_per_day, sizing_comment, index_comp_ratio, calculated_size, estimated_days_for_current_size,
+                   oldest_data_found, rep_factor_multiplier, min_req_size))
+
+            index_list[index_name].calc_max_total_data_size_mb = min_req_size
+
         # This index was never sized so auto-size it
         if sizing_comment < 0:
             if not calculated_size:
