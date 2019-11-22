@@ -205,27 +205,30 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
             index_list[index_name].perc_utilised_on_estimate = perc_utilised_on_estimate
             index_list[index_name].days_until_full_disk_calculation_on_estimate = days_until_full_disk_calculation_on_estimate
 
+        min_size_override = False
         # Bucket explosion occurs if we undersize an index too much so cap at the lower size limit
         if calculated_size < lower_index_size_limit:
             calculated_size = lower_index_size_limit
+            min_size_override = True
+
+        min_req_size = int(index_list[index_name].max_hot_buckets) * max_data_size
+        if calculated_size < min_req_size:
+            logger.warn("index=%s, calc_max_total_data_size_mb=%s less than min_req_size=%s (based on bucket_size=%s*max_hot_buckets=%s), "\
+                " frozen_time_period_in_days=%s, max_total_data_size_mb=%s , "\
+                "avg_license_usage_per_day=%s, sizing_comment=%s, index_comp_ratio=%s, calculated_size=%s, estimated_days_for_current_size=%s, "\
+                "oldest_data_found=%s, rep_factor_multiplier=%s, changing size back to %s"
+                % (index_name, calculated_size, min_req_size, max_data_size, index_list[index_name].max_hot_buckets,
+                   frozen_time_period_in_days, max_total_data_size_mb, avg_license_usage_per_day, sizing_comment, index_comp_ratio, calculated_size,
+                   estimated_days_for_current_size, oldest_data_found, rep_factor_multiplier, min_req_size))
+
+            calculated_size = min_req_size
+            min_size_override = True
 
         # Add our calculated size back in for later, int just in case the lower_index_size_limit is a float
         index_list[index_name].calc_max_total_data_size_mb = int(round(calculated_size))
 
         # This flag is set if the index is undersized on purpose (i.e. we have a setting that says to set it below the limit where we lose data
         donotIncrease = False
-
-        min_req_size = int(index_list[index_name].max_hot_buckets) * max_data_size
-        if index_list[index_name].calc_max_total_data_size_mb < min_req_size:
-            logger.warn("index=%s, calc_max_total_data_size_mb=%s less than min_req_size=%s (based on bucket_size=%s*max_hot_buckets=%s), "\
-                " frozen_time_period_in_days=%s, max_total_data_size_mb=%s , "\
-                "avg_license_usage_per_day=%s, sizing_comment=%s, index_comp_ratio=%s, calculated_size=%s, estimated_days_for_current_size=%s, "\
-                "oldest_data_found=%s, rep_factor_multiplier=%s, changing size back to %s"
-                % (index_name, calc_max_total_data_size_mb, min_req_size, max_data_size, index_list[index_name].max_hot_buckets, frozen_time_period_in_days,
-                   max_total_data_size_mb, avg_license_usage_per_day, sizing_comment, index_comp_ratio, calculated_size, estimated_days_for_current_size,
-                   oldest_data_found, rep_factor_multiplier, min_req_size))
-
-            index_list[index_name].calc_max_total_data_size_mb = min_req_size
 
         # This index was never sized so auto-size it
         if sizing_comment < 0:
@@ -286,6 +289,8 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
                             "current size would fit days=%s, frozenTimeInDays=%s, increasing the size of this index, oldest data found is days=%s old, "\
                             "rep_factor_multiplier=%s"
                             % (index_name, sizing_comment, avg_license_usage_per_day, estimated_days_for_current_size, frozen_time_period_in_days, oldest_data_found, rep_factor_multiplier))
+                    elif min_size_override:
+                        index_list[index_name].calc_max_total_data_size_mb = usage_based_caculated_size
                     else:
                         logger.warn("index=%s has more data than expected and has sizing_comment=%s however avg_license_usage_per_day=%s, data loss is likely after days=%s, "\
                             "frozenTimeInDays=%s, oldest data found is days=%s old, rep_factor_multiplier=%s, making no changes here as do_not_lose_data_flag is false and this index has "\
@@ -330,12 +335,15 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
 
         # If the estimates show we cannot store the expected frozen_time_period_in_days on disk we need to take action
         # this is an undersized scenario and we need a larger size unless of course we have already capped the index at this size and data loss is expected
-        if estimated_days_for_current_size < frozen_time_period_in_days and not donotIncrease:
-            logger.info("index=%s has less storage than the frozen time period in days, estimated_days_for_current_size=%s frozen_time_period_in_days=%s an increase may be required"
-                        % (index_name, estimated_days_for_current_size, frozen_time_period_in_days))
-            # TODO if sizing_comment != "N/A" do we still increase an undersized index or let it get frozen anyway because the disk estimates were invalid?!
-            # also the above would be assuming that the disk estimates were based on the indexers we have now configured
-            # for now assuming we always want to increase and prevent data loss...
+        if (estimated_days_for_current_size < frozen_time_period_in_days and not donotIncrease) or min_size_override:
+            if not min_size_override:
+                logger.info("index=%s has less storage than the frozen time period in days, estimated_days_for_current_size=%s frozen_time_period_in_days=%s an increase may be required"
+                            % (index_name, estimated_days_for_current_size, frozen_time_period_in_days))
+                # TODO if sizing_comment != "N/A" do we still increase an undersized index or let it get frozen anyway because the disk estimates were invalid?!
+                # also the above would be assuming that the disk estimates were based on the indexers we have now configured
+                # for now assuming we always want to increase and prevent data loss...
+            else:
+                logger.info("index=%s requires an increase due to been below minimum sizing requirements" % (index_name))
 
             if max_total_data_size_mb == index_list[index_name].calc_max_total_data_size_mb:
                 logger.info("index=%s max_total_data_size_mb=%s is the new calculated size, therefore no changes required here" % (index_name, max_total_data_size_mb))
