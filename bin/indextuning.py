@@ -13,7 +13,6 @@ import logging
 from logging.config import dictConfig
 import requests
 from requests.auth import HTTPBasicAuth
-import json
 from index_bucket_sizing import run_bucket_sizing
 from index_tuning_presteps import index_tuning_presteps
 from indextuning_index_tuning import run_index_sizing
@@ -240,9 +239,12 @@ if args.bucketTuning or args.indexSizing:
         sys.exit(-1)
 
     logger.debug("index ignore list response=\"%s\"" % (res.text))
-    index_ignore_json = json.loads(res.text)
-    index_ignore_list = [ item['index'] for item in index_ignore_json ]
-    logger.info("index=%s added to ignore list for tuning purposes" % (index_ignore_list))
+    index_ignore_json = res.json()
+    if len(index_ignore_json) != 0:
+        index_ignore_list = [ item['index'] for item in index_ignore_json ]
+        logger.info("index=%s added to ignore list for tuning purposes" % (index_ignore_list))
+    else:
+        logger.warn("Found no indexes to add to ignore list for tuning purposes, this normally indicates a problem that should be checked")
 
 # Setup the utility class with the username, password and URL we have available
 logger.debug("Creating utility object with username=%s, destURL=%s, oldest_data_found=%s" % (args.username, args.destURL, args.oldest_data_found))
@@ -296,7 +298,7 @@ if args.bucketTuning or args.indexSizing:
 
     if args.bucketTuning:
         (indexes_requiring_changes, conf_files_requiring_changes) = run_bucket_sizing(utility, index_list, args.indexNameRestriction, args.indexLimit, args.num_hours_per_bucket,
-        args.bucket_contingency, args.upper_comp_ratio_level, args.min_size_to_calculate, args.numberOfIndexers, args.rep_factor_multiplier)
+        args.bucket_contingency, args.upper_comp_ratio_level, args.min_size_to_calculate, args.numberOfIndexers, args.rep_factor_multiplier, args.do_not_lose_data_flag)
 
     if args.indexSizing:
         (conf_files_requiring_changes, indexes_requiring_changes, calculated_size_total) = run_index_sizing(utility, index_list, args.indexNameRestriction, args.indexLimit,

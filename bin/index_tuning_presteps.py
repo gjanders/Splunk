@@ -51,6 +51,32 @@ def index_tuning_presteps(utility, index_list, index_ignore_list, earliest_licen
         index_list[index_name].index_comp_ratio, index_list[index_name].splunk_max_disk_usage_mb, index_list[index_name].oldest_data_found, index_list[index_name].newest_data_found = \
             utility.determine_compression_ratio(index_name, indexerhostnamefilter, useIntrospectionData)
 
+        index_list[index_name].summary_index = False
+        avg_license_usage_per_day = index_list[index_name].avg_license_usage_per_day
+        # Zero license usage, this could be a summary index
+        if avg_license_usage_per_day == 0:
+            json_result = utility.run_search_query("| metadata index=%s type=sourcetypes | table sourcetype" % (index_name))
+            # Load the result so that it's formatted into a dictionary instead of string
+
+            # If we get no results back assume its not a summary index
+            if "results" in json_result and len(json_result["results"]) == 1 and json_result["results"][0]["sourcetype"] == "stash":
+                # At this point we know its a summary index
+                # So we can use the average growth rate to determine if any sizing changes are required
+                json_result = utility.run_search_query(""" search index=_introspection \"data.name\"=\"%s\"
+                | bin _time span=1d
+                | stats max(data.total_size) AS total_size by host, _time
+                | streamstats current=f window=1 max(total_size) AS prev_total by host
+                | eval diff=total_size - prev_total
+                | stats avg(diff) AS avgchange by host
+                | stats avg(avgchange) AS overallavg""" % (index_name))
+
+                # Load the result so that it's formatted into a dictionary instead of string
+                if "results" in json_result and len(json_result["results"]) == 1:
+                    summary_usage_change_per_day = float(json_result["results"][0]["overallavg"])
+                    logger.info("index=%s is a summary index, average_change_per_day=%s from introspection logs" % (index_name, summary_usage_change_per_day))
+                    index_list[index_name].summary_usage_change_per_day = summary_usage_change_per_day
+                index_list[index_name].summary_index = True
+
         counter = counter + 1
 
     # At this point we have indexes that we are supposed to ignore in the dictionary, we need them there so we could
