@@ -2,7 +2,6 @@ import six.moves.urllib.request, six.moves.urllib.parse, six.moves.urllib.error
 import requests
 from xml.dom import minidom
 import re
-import json
 from subprocess import Popen, PIPE, check_output
 import threading
 import six.moves.queue
@@ -66,8 +65,7 @@ class utility:
 
         logger.debug("Result from query=%s" % (res.text))
 
-        return res.text
-
+        return res.json()
     ##############
     #
     # Read the btool output of splunk btool indexes list --debug
@@ -258,18 +256,17 @@ class utility:
         # added rawSize>0 as streaming hot buckets appear to show 0 rawSize but
         # a sizeOnDiskMB is measured so this results in an unusually large
         # MB/hour number!
-        http_result = self.run_search_query(
+        json_result = self.run_search_query(
             " | dbinspect index=%s | eval hours=(endEpoch-startEpoch)/60/60 "\
             " | where hours>1 AND rawSize>0 | eval sizePerHour=sizeOnDiskMB/hours " \
             " | stats avg(sizePerHour) AS averageSizePerHour " \
             " | eval bucket_size=averageSizePerHour*%s " \
             " | fields bucket_size" % (index_name, num_hours_per_bucket))
 
-        # Load the result so that it's formatted into a dictionary instead of string
-        logger.debug("Bucket size http_result=" + http_result)
-        json_result = json.loads(http_result)
 
-        if len(json_result["results"]) != 1:
+        logger.debug("Bucket size json_result=%s" % (json_result))
+
+        if "results" not in json_result or len(json_result["results"]) != 1:
             logger.info("No results found for index=%s with dbinspect command" % (index_name))
             return float(0)
 
@@ -283,7 +280,7 @@ class utility:
     def determine_license_usage_per_day(self, index_name, earliest_license,
                                     latest_license):
         # Generic query
-        http_result = self.run_search_query(
+        json_result = self.run_search_query(
             "search index=_internal source=*license_usage.log sourcetype=splunkd "\
             "earliest=%s latest=%s idx=%s "\
             "| bin _time span=1d "\
@@ -296,11 +293,9 @@ class utility:
             "| fields avgMBPerDay, maxMBPerDay, firstSeen" \
             % (earliest_license, latest_license, index_name))
 
-        logger.debug("index=%s earliest_time=%s latest_time=%s http_result=%s" % (index_name, earliest_license, latest_license, http_result))
-        # Load the result so that it's formatted into a dictionary instead of string
-        json_result = json.loads(http_result)
+        logger.debug("index=%s earliest_time=%s latest_time=%s json_result=%s" % (index_name, earliest_license, latest_license, json_result))
 
-        if len(json_result["results"]) != 1:
+        if "results" not in json_result or len(json_result["results"]) != 1:
             logger.info("No results found for license query for index=%s earliest_time=%s" % (index_name, earliest_license))
             return 0, 0, 0
 
@@ -338,7 +333,7 @@ class utility:
         # earliest time, therefore it's a trade off in terms of
         # which one we choose
         if use_introspection_data:
-            http_result = self.run_search_query(
+            json_result = self.run_search_query(
                 "search earliest=-10m index=_introspection component=Indexes host=%s data.name=%s "\
                 "| eval minTime=coalesce('data.bucket_dirs.cold.event_min_time', 'data.bucket_dirs.home.event_min_time'), "\
                 " maxTime=coalesce('data.bucket_dirs.home.event_max_time', 'data.bucket_dirs.cold.event_max_time') "\
@@ -374,11 +369,9 @@ class utility:
                       newest_time = floor((now() - newest_time) / 86400)
                     | eval earliest_time = if(isnotnull(earliest_time), earliest_time, 0)
                     | fields ratio, max_total_size, earliest_time, newest_time"""
-            http_result = self.run_search_query(search)
+            json_result = self.run_search_query(search)
 
-        logger.debug("determine_compression_ratio index_name=%s use_introspection_data=%s http_result=%s"% (index_name, use_introspection_data, http_result))
-        # Load the result so that it's formatted into a dictionary instead of string
-        json_result = json.loads(http_result)
+        logger.debug("determine_compression_ratio index_name=%s use_introspection_data=%s json_result=%s"% (index_name, use_introspection_data, json_result))
 
         # If we don't have both results we have no data for this index
         if "results" not in json_result or len(json_result["results"]) != 1:
