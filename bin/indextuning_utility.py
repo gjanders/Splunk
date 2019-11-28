@@ -63,9 +63,22 @@ class utility:
                              res.reason, res.text, data))
             sys.exit(-1)
 
-        logger.debug("Result from query=%s" % (res.text))
+        if res.text != "":
+            logger.debug("Result from query=%s" % (res.text))
+        else:
+            logger.warn("Result from query=%s URL=%s with username=%s "\
+            "response_code=%s, reason=%s, text=%s, payload=%s"
+                          % (res.text, url, self.username, res.status_code,
+                             res.reason, res.text, data))
+            res = requests.post(url, auth=(self.username, self.password),
+                            data=data, verify=False)
+            if res.text != "":
+                logger.info("Query retry suceeded")
+            else:
+                logger.warn("Query retry failed")
 
         return res.json()
+
     ##############
     #
     # Read the btool output of splunk btool indexes list --debug

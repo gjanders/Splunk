@@ -67,8 +67,8 @@ What does this script do?
     this commonly happens when an index is renamed leaving extra directories on the filesystem that will never delete themselves
     * Unless the deadIndexDelete flag is also passed in this will not actually delete any files, it will provide a listing of what appears to be extra files
 
- TODO an indexes datatype can be event or metric, if metric do we do the same tuning?
- Since dbinspect appears to work along with other queries assuming they can be treated the same for now...
+ Indexes datatype can be event or metric, if metrics we do the same tuning but we avoid data loss as the chance of accidentally flooding a metrics index with data
+ is very low...dbinspect still works along with other queries, and as of 7.3+ the license usage is now limited to 150 bytes/metric (it can be less now)
 """
 
 #In addition to console output we write the important info into a log file, console output for debugging purposes only
