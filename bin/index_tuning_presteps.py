@@ -90,9 +90,9 @@ def index_tuning_presteps(utility, index_list, index_ignore_list, earliest_licen
             logger.debug("Removing index=\"%s\" from index_list" % (index))
 
     #Metric indexes are excluded from tuning at this stage
-    for index_name in list(index_list.keys()):
-        datatype = index_list[index_name].datatype
-        if datatype != 'event':
-            logger.info("index=%s is excluded from tuning due to not been of type events, type=%s" % (index_name, datatype))
-            indexes_not_getting_sized[index_name] = index_list[index_name]
-            del index_list[index_name]
+    #for index_name in list(index_list.keys()):
+    #    datatype = index_list[index_name].datatype
+    #    if datatype != 'event':
+    #        logger.info("index=%s is excluded from tuning due to not been of type events, type=%s" % (index_name, datatype))
+    #        indexes_not_getting_sized[index_name] = index_list[index_name]
+    #        del index_list[index_name]
