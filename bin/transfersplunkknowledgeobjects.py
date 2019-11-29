@@ -1238,7 +1238,7 @@ if args.macros:
         for srcApp in src_app_list:
             macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, macroResults)
     else:
-        macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode)
+        macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, macroResults)
     logger.info("End macros transfer")
 
 if args.tags:
