@@ -548,10 +548,10 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                                 deletionURL = "%s/%s" % (splunk_rest_dest, innerChild.attrib["href"])
                                 logger.debug("%s of type %s in app %s recording new deletion URL as %s , owner is %s and sharing level %s" % (name, type, app, deletionURL, owner, sharing))
                                 #Remove our last recorded URL
-                                logger.info("action results is %s" % (actionResults))
+                                #logger.debug("action results is %s" % (actionResults))
                                 popLastResult(actionResults, 'creationSuccess')
                                 appendToResults(actionResults, 'creationSuccess', deletionURL)
-                                logger.info("action results is %s" % (actionResults))
+                                #logger.debug("action results is %s" % (actionResults))
             if creationSuccessRes:
                 logger.info("Created %s of type %s in app %s owner is %s sharing level %s" % (name, type, app, owner, sharing))
             else:
@@ -1363,8 +1363,8 @@ if args.panels:
     
 if args.datamodels:
     logger.info("Begin datamodels transfer")
+    datamodelResults = {}    
     if src_app_list:
-        datamodelResults = {}
         for srcApp in src_app_list:
             datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, datamodelResults)
     else:    
