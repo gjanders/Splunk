@@ -424,6 +424,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
         url = "%s/servicesNS/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint)
         objURL = None
         origName = None
+        encoded_name = six.moves.urllib.parse.quote(name.encode('utf-8'))
         if 'origName' in anInfo:
             origName = anInfo['origName']
             del anInfo['origName']
@@ -432,9 +433,9 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
         else:
             #datamodels do not allow /-/ (or private / user level sharing, only app level)
             if type == "datamodels":
-                objURL = "%s/servicesNS/%s/%s/%s/%s?output_mode=json" % (splunk_rest_dest, owner, app, endpoint, name)
+                objURL = "%s/servicesNS/%s/%s/%s/%s?output_mode=json" % (splunk_rest_dest, owner, app, endpoint, encoded_name)
             else:
-                objURL = "%s/servicesNS/-/%s/%s/%s?output_mode=json" % (splunk_rest_dest, app, endpoint, name)
+                objURL = "%s/servicesNS/-/%s/%s/%s?output_mode=json" % (splunk_rest_dest, app, endpoint, encoded_name)
         logger.debug("%s of type %s checking on URL %s to see if it exists" % (name, type, objURL))
         #Verify=false is hardcoded to workaround local SSL issues
         res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)
@@ -775,10 +776,11 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
             
         url = "%s/servicesNS/%s/%s/properties/macros" % (splunk_rest_dest, owner, app)
 
-        objURL = "%s/servicesNS/-/%s/configs/conf-macros/%s?output_mode=json" % (splunk_rest_dest, app, name)
+        encoded_name = six.moves.urllib.parse.quote(name.encode('utf-8'))
+        objURL = "%s/servicesNS/-/%s/configs/conf-macros/%s?output_mode=json" % (splunk_rest_dest, app, encoded_name)
         #Verify=false is hardcoded to workaround local SSL issues
-        res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)
         logger.debug("%s of type macro checking on URL %s to see if it exists" % (name, objURL))
+        res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)        
         objExists = False
         updated = None
         #If we get 404 it definitely does not exist
