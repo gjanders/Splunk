@@ -478,6 +478,7 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
             homepath_max_data_size_mb = index_list[index_name].homepath_max_data_size_mb
             cur_homepath_max_data_size_mb = index_list[index_name].homepath_max_data_size_mb
             cur_cold_path_max_data_size_mb = index_list[index_name].coldpath_max_datasize_mb
+            cold_path_max_data_size_mb = cur_cold_path_max_data_size_mb
 
             skipconf_file = False
             # if we're only changing the sizing comment then don't attempt sizing the max_data_sizeMB
@@ -507,16 +508,17 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
                 index_list[index_name].homepath_max_data_size_mb = homepath_max_data_size_mb
                 index_list[index_name].cold_path_max_data_size_mb = cold_path_max_data_size_mb
 
-                if int(max_total_data_size_mb) == int(index_list[index_name].calc_max_total_data_size_mb) and int(homepath_max_data_size_mb) == int(cur_homepath_max_data_size_mb) \
-                    and int(cur_cold_path_max_data_size_mb) == int(cold_path_max_data_size_mb):
-                    logger.debug("index=%s, found no difference to index sizing after correctly sizing home/cold paths" % (index_name))
-                    if indexes_requiring_changes[index_name] == "sizing":
-                        del indexes_requiring_changes[index_name]
-                        skipconf_file = True
-                    elif indexes_requiring_changes[index_name] == "bucket_sizing":
-                        indexes_requiring_changes[index_name] = "bucket"
-                    else:
-                        logger.warn("index=%s unhandled edge case here, continuing on, indexes_requiring_changes=\"%s\"" % (index_name, indexes_requiring_changes[index_name]))
+            # If the sizing results in the exact same size then do nothing in terms of configuration file updates related to sizing
+            if int(max_total_data_size_mb) == int(index_list[index_name].calc_max_total_data_size_mb) and int(homepath_max_data_size_mb) == int(cur_homepath_max_data_size_mb) \
+                and int(cur_cold_path_max_data_size_mb) == int(cold_path_max_data_size_mb):
+                logger.debug("index=%s, found no difference to index sizing after correctly sizing home/cold paths" % (index_name))
+                if indexes_requiring_changes[index_name] == "sizing":
+                    del indexes_requiring_changes[index_name]
+                    skipconf_file = True
+                elif indexes_requiring_changes[index_name] == "bucket_sizing":
+                    indexes_requiring_changes[index_name] = "bucket"
+                else:
+                    logger.warn("index=%s unhandled edge case here, continuing on, indexes_requiring_changes=\"%s\"" % (index_name, indexes_requiring_changes[index_name]))
 
             # Add the conf file to the list we need to work on
             if not conf_file in conf_files_requiring_changes and not skipconf_file:
