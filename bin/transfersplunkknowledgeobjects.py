@@ -779,15 +779,16 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         encoded_name = six.moves.urllib.parse.quote(name.encode('utf-8'))
         objURL = "%s/servicesNS/-/%s/configs/conf-macros/%s?output_mode=json" % (splunk_rest_dest, app, encoded_name)
         #Verify=false is hardcoded to workaround local SSL issues
+        res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)
         logger.debug("%s of type macro checking on URL %s to see if it exists" % (name, objURL))
-        res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)        
         objExists = False
         updated = None
+        createdInAppContext = False
         #If we get 404 it definitely does not exist
         if (res.status_code == 404):
-            logger.debug("URL %s is throwing a 404, assuming new object creation" % (url))
+            logger.debug("URL %s is throwing a 404, assuming new object creation" % (objURL))
         elif (res.status_code != requests.codes.ok):
-            logger.error("URL %s in app %s status code %s reason %s, response: '%s'" % (url, app, res.status_code, res.reason, res.text))
+            logger.error("URL %s in app %s status code %s reason %s, response: '%s'" % (objURL, app, res.status_code, res.reason, res.text))
         else:
             #However the fact that we did not get a 404 does not mean it exists in the context we expect it to, perhaps it's global and from another app context?
             #or perhaps it's app level but we're restoring a private object...
@@ -799,6 +800,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
                 updatedStr = entry['updated']
                 updated = determineTime(updatedStr, name, app, "macro")
                 remoteObjOwner = entry['acl']['owner']
+                logger.info("sharing level %s, app context %s, remoteObjOnwer %s, app %s" % (sharing, appContext, remoteObjOwner, app))
                 if appContext == app and (sharing == 'app' or sharing=='global') and (sharingLevel == 'app' or sharingLevel == 'global'):
                     objExists = True
                     logger.debug("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, app, objURL, sharingLevel, updated))
@@ -806,12 +808,15 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
                     objExists = True
                     logger.debug("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, app, objURL, sharingLevel, updated))
                 elif appContext == app and sharingLevel == "user" and remoteObjOwner == owner and (sharing == "app" or sharing == "global"):
-                    logger.info("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s, this is a problem because we cannot create a private object in this context, will attempt to create an app level object" % (name, app, objURL, sharingLevel, updated))
-                    url = "%s/servicesNS/nobody/%s/properties/macros" % (splunk_rest_dest, app)
                     logger.debug("name %s of type macro in app context %s new url is %s" % (name, app, url))
                 else:
                     logger.debug("name %s of type macro in app context %s, found the object with this name in sharingLevel %s and appContext %s, updated time of %s" % (name, app, sharingLevel, appContext, updated))
-        
+
+        if sharing == 'app' or sharing=='global':
+            url = "%s/servicesNS/nobody/%s/properties/macros" % (splunk_rest_dest, app)
+            logger.info("name %s of type macro in app context %s, sharing level is non-user so creating with nobody context updated url is %s" % (name, app, url))
+            createdInAppContext = True
+
         if objExists == True and not (override or overrideAlways):
             logger.info("%s of type macro in app %s on URL %s exists, however override/overrideAlways is not set so not changing this macro" % (name, app, objURL))
             appendToResults(macroResults, 'creationSkip', objURL)
@@ -824,6 +829,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         createOrUpdate = None
         if objExists == True:
             createOrUpdate = "update"
+            url = url + "/" + encoded_name 
         else:
             createOrUpdate = "create"
         
@@ -855,8 +861,6 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
 
             logger.debug("%s of type macro in app %s, received response of: '%s'" % (name, app, res.text))
         
-        #Now we have created the macro, modify it so it has some real content
-        url = "%s/servicesNS/%s/%s/properties/macros/%s" % (splunk_rest_dest, owner, app, name)
         payload = {}
         
         #Remove parts that cannot be posted to the REST API, sharing/owner we change later
@@ -865,6 +869,9 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         del aMacro["owner"]
         payload = aMacro
         
+        if createOrUpdate == "create":
+            url = url + "/" + encoded_name 
+
         logger.debug("Attempting to modify macro %s on URL %s with payload '%s' in app %s" % (name, url, payload, app))
         res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
         if (res.status_code != requests.codes.ok and res.status_code != 201):
@@ -880,31 +887,37 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
             
             macroCreationSuccessRes = False
         else:
-            #Re-owning it, I've switched URL's again here but it seems to be working so will not change it
-            url = "%s/servicesNS/%s/%s/configs/conf-macros/%s/acl" % (splunk_rest_dest, owner, app, name)
-            payload = { "owner": owner, "sharing" : sharing }
-            logger.info("Attempting to change ownership of macro %s via URL %s to owner %s in app %s with sharing %s" % (name, url, owner, app, sharing))
-            res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
-            if (res.status_code != requests.codes.ok):
-                logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s', owner %s sharing level %s" % (name, app, url, res.status_code, res.reason, res.text, owner, sharing))
-                #Hardcoded deletion URL as if this fails it should be this URL...(not parsing the XML here to confirm but this works fine)
-                deletionURL = "%s/servicesNS/%s/%s/configs/conf-macros/%s" % (splunk_rest_dest, owner, app, name)
-                logger.info("%s of type macro in app %s recording deletion URL as user URL due to change ownership failure %s" % (name, app, deletionURL))
-                #Remove the old record
-                if objExists == False:
-                    popLastResult(macroResults, 'macroCreationSuccess')
-                    macroCreationSuccessRes = False
-                    url = url[:-4]
-                    logger.warn("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
-                    requests.delete(url, auth=(destUsername,destPassword), verify=False)
-                    appendToResults(macroResults, 'creationFailure', name)
+            if not createdInAppContext:
+                #Re-owning it, I've switched URL's again here but it seems to be working so will not change it
+                url = "%s/servicesNS/%s/%s/configs/conf-macros/%s/acl" % (splunk_rest_dest, owner, app, encoded_name)
+                payload = { "owner": owner, "sharing" : sharing }
+                logger.info("Attempting to change ownership of macro %s via URL %s to owner %s in app %s with sharing %s" % (name, url, owner, app, sharing))
+                res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+                if (res.status_code != requests.codes.ok):
+                    logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s', owner %s sharing level %s" % (name, app, url, res.status_code, res.reason, res.text, owner, sharing))
+                    #Hardcoded deletion URL as if this fails it should be this URL...(not parsing the XML here to confirm but this works fine)
+                    deletionURL = "%s/servicesNS/%s/%s/configs/conf-macros/%s" % (splunk_rest_dest, owner, app, name)
+                    logger.info("%s of type macro in app %s recording deletion URL as user URL due to change ownership failure %s" % (name, app, deletionURL))
+                    #Remove the old record
+                    if objExists == False:
+                        popLastResult(macroResults, 'macroCreationSuccess')
+                        macroCreationSuccessRes = False
+                        url = url[:-4]
+                        logger.warn("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
+                        requests.delete(url, auth=(destUsername,destPassword), verify=False)
+                        appendToResults(macroResults, 'creationFailure', name)
+                    else:
+                        appendToResults(macroResults, 'updateFailure', name)
+                        macroCreationSuccessRes = False
                 else:
-                    appendToResults(macroResults, 'updateFailure', name)
-                    macroCreationSuccessRes = False
+                    macroCreationSuccessRes = True
+                    logger.debug("%s of type macro in app %s, ownership changed with response '%s', new owner %s and sharing level %s" % (name, app, res.text, owner, sharing))
+                    if objExists == True:
+                        appendToResults(macroResults, 'updateSuccess', name)
             else:
-                logger.debug("%s of type macro in app %s, ownership changed with response '%s', new owner %s and sharing level %s" % (name, app, res.text, owner, sharing))
-                if objExists == True:
-                    appendToResults(macroResults, 'updateSuccess', name)
+                macroCreationSuccessRes = True
+                appendToResults(macroResults, 'updateSuccess', name)
+
             if macroCreationSuccessRes:
                 logger.info("%s %s of type macro in app %s owner is %s sharing level %s was successful" % (createOrUpdate, name, app, owner, sharing))
             else:
@@ -1365,11 +1378,11 @@ if args.panels:
     
 if args.datamodels:
     logger.info("Begin datamodels transfer")
-    datamodelResults = {}    
+    datamodelResults = {}
     if src_app_list:
         for srcApp in src_app_list:
             datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, datamodelResults)
-    else:    
+    else:
         datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, datamodelResults)
     logger.info("End datamodels transfer")
 
