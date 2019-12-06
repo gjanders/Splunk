@@ -577,7 +577,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 if origName:
                     urlName = origName
                 else:
-                    urlName = name
+                    urlName = encoded_name
                 
                 if sharing == "user":
                     url = "%s/servicesNS/%s/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint, urlName)
