@@ -425,6 +425,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
         objURL = None
         origName = None
         encoded_name = six.moves.urllib.parse.quote(name.encode('utf-8'))
+        encoded_name = encoded_name.replace("/", "%2F")        
         if 'origName' in anInfo:
             origName = anInfo['origName']
             del anInfo['origName']
@@ -781,6 +782,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         url = "%s/servicesNS/%s/%s/properties/macros" % (splunk_rest_dest, owner, app)
 
         encoded_name = six.moves.urllib.parse.quote(name.encode('utf-8'))
+        encoded_name = encoded_name.replace("/", "%2F")        
         objURL = "%s/servicesNS/-/%s/configs/conf-macros/%s?output_mode=json" % (splunk_rest_dest, app, encoded_name)
         #Verify=false is hardcoded to workaround local SSL issues
         res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)
