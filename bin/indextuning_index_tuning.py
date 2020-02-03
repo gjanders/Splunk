@@ -517,6 +517,8 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
                     skipconf_file = True
                 elif indexes_requiring_changes[index_name] == "bucket_sizing":
                     indexes_requiring_changes[index_name] = "bucket"
+                elif indexes_requiring_changes[index_name] == "bucket":
+                    pass
                 else:
                     logger.warn("index=%s unhandled edge case here, continuing on, indexes_requiring_changes=\"%s\"" % (index_name, indexes_requiring_changes[index_name]))
 
