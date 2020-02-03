@@ -143,7 +143,7 @@ def run_bucket_sizing(utility, index_list, index_name_restriction, index_limit, 
         calculated_size = (index_comp_ratio * license_calc_size * frozen_time_period_in_days * rep_factor_multiplier)/num_of_indexers
         if (max_hot_buckets * bucket_auto_size) > calculated_size and not summary_index and bucket_size == "10240_auto":
             decrease_required = True
-            logger.debug("index=%s requires a bucket_decrease as it has a (max_hot_buckets=%s * bucket_auto_size=%s() > ((index_comp_ratio=%s * license_calc_size=%s" \
+            logger.debug("index=%s requires a bucket_decrease as it has a (max_hot_buckets=%s * bucket_auto_size=%s) > ((index_comp_ratio=%s * license_calc_size=%s" \
                 " * frozen_time_period_in_days=%s * rep_factor_multiplier=%s) / num_of_indexers=%s)"
                 % (index_name, max_hot_buckets, bucket_auto_size, index_comp_ratio, license_calc_size, frozen_time_period_in_days,
                 rep_factor_multiplier, num_of_indexers))
