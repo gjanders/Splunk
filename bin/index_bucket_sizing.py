@@ -147,7 +147,7 @@ def run_bucket_sizing(utility, index_list, index_name_restriction, index_limit, 
                 " * frozen_time_period_in_days=%s * rep_factor_multiplier=%s) / num_of_indexers=%s)"
                 % (index_name, max_hot_buckets, bucket_auto_size, index_comp_ratio, license_calc_size, frozen_time_period_in_days,
                 rep_factor_multiplier, num_of_indexers))
-        elif (max_hot_buckets * bucket_auto_size) > calculated_size and not summary_index and bucket_size == "750_auto":
+        elif (max_hot_buckets * 10240) > calculated_size and not summary_index and bucket_size == "750_auto":
             increase_allowed = False
             logger.debug("index=%s lacks the license usage/agreed size for an increase (max_hot_buckets=%s * bucket_auto_size=%s) > ((index_comp_ratio=%s * license_calc_size=%s" \
                 " * frozen_time_period_in_days=%s * rep_factor_multiplier=%s) / num_of_indexers=%s)"
