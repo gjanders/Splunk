@@ -258,7 +258,7 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
                 oversized = False
             else:
                 # size estimate on disk based on the compression ratio we have seen, and the the configured size in the config file
-                size_estimate = (sizing_comment * index_comp_ratio * frozen_time_period_in_days)/num_of_indexers
+                size_estimate = (sizing_comment * index_comp_ratio * frozen_time_period_in_days * rep_factor_multiplier)/num_of_indexers
                 # including contingency
                 size_estimate = size_estimate * sizing_continency
 
@@ -284,16 +284,18 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
                         index_list[index_name].calc_max_total_data_size_mb = usage_based_caculated_size
                         logger.info("index=%s has more data than expected and has sizing_comment=%s however avg_license_usage_per_day=%s, "\
                             "current size would fit days=%s, frozenTimeInDays=%s, increasing the size of this index, oldest data found is days=%s old, "\
-                            "rep_factor_multiplier=%s, datatype=%s"
+                            "rep_factor_multiplier=%s, datatype=%s, usage_based_caculated_size=%s, calc_size_per_day_based_on_commented_size=%s"
                             % (index_name, sizing_comment, avg_license_usage_per_day, estimated_days_for_current_size, 
-                            frozen_time_period_in_days, oldest_data_found, rep_factor_multiplier, index_list[index_name].datatype))
+                            frozen_time_period_in_days, oldest_data_found, rep_factor_multiplier, index_list[index_name].datatype,
+                            usage_based_caculated_size, calc_size_per_day_based_on_commented_size))
                     elif min_size_override:
                         index_list[index_name].calc_max_total_data_size_mb = usage_based_caculated_size
                     else:
                         logger.warn("index=%s has more data than expected and has sizing_comment=%s however avg_license_usage_per_day=%s, data loss is likely after days=%s, "\
                             "frozenTimeInDays=%s, oldest data found is days=%s old, rep_factor_multiplier=%s, making no changes here as do_not_lose_data_flag is false and this index has "\
-                            "a sizing_comment"
-                            % (index_name, sizing_comment, avg_license_usage_per_day, estimated_days_for_current_size, frozen_time_period_in_days, oldest_data_found, rep_factor_multiplier))
+                            "a sizing_comment, usage_based_caculated_size=%s, calc_size_per_day_based_on_commented_size=%s"
+                            % (index_name, sizing_comment, avg_license_usage_per_day, estimated_days_for_current_size, frozen_time_period_in_days, oldest_data_found, rep_factor_multiplier,
+                              usage_based_caculated_size, calc_size_per_day_based_on_commented_size))
 
                 # If the newly calculated size has increased compared to previous size multiplied by the undersizing contingency
                 elif estimated_days_for_current_size < frozen_time_period_in_days:
