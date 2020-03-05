@@ -109,6 +109,7 @@ for adir in appDirsRequired.keys():
             fulldir = ""
            
             for line in file:
+                line=line.rstrip()
                 #determine if this is a stanza entry
                 result = regex1.match(line)
                 if result != None:
@@ -165,6 +166,7 @@ for adir in appDirsRequired.keys():
                         result4 = regex4.search(eventbreakerstr)
                         eventbreakerstr = eventbreakerstr[0:result4.start()] + " (" + eventbreakerstr[result4.start():] + ")"
                         res = "EVENT_BREAKER " + eventbreakerstr
+                        #print "%s file EVENT_BREAKER %s\n" % (outputFiles[fulldir], eventbreakerstr)
                     else:                        
                         res = result2.group(1).lower()
                         #if SHOULD_LINEMERGE = false then we can enable the event breaker, if not we cannot
