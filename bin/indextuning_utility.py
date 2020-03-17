@@ -130,12 +130,14 @@ class utility:
                     index_name = string_res[1:len(string_res)-1]
                     cur_index = index(index_name)
                     cur_index.conf_file = conf_file
+                    in_index_mode = True
                     logger.debug("Working with index=" + str(cur_index))
                 else:
                     # skip the volume:... part and the ] at the end
                     vol_name = string_res[8:len(string_res)-1]
                     vol = volume(vol_name)
                     vol.conf_file = conf_file
+                    in_index_mode = False
                     logger.debug("Working with volume=" + vol_name)
                 # We are done with this round of the loop
                 continue
@@ -149,48 +151,55 @@ class utility:
                 if value == "1":
                     disabled = True
             # Path exists only within volumes
-            elif stanza == "path":
+            elif stanza == "path" and not in_index_mode:
                 vol.path = value
-            elif stanza == "coldPath.maxDataSizeMB":
+            elif stanza == "coldPath.maxDataSizeMB" and in_index_mode:
                 cur_index.coldpath_max_datasize_mb = float(value)
-            elif stanza == "coldToFrozenDir":
+            elif stanza == "coldToFrozenDir" and in_index_mode:
                 if value != "":
                     cur_index.cold_to_frozen_dir = value
-            elif stanza == "datatype":
+            elif stanza == "datatype" and in_index_mode:
                 cur_index.datatype = value
-            elif stanza == "frozenTimePeriodInSecs":
+            elif stanza == "frozenTimePeriodInSecs" and in_index_mode:
                 cur_index.frozen_time_period_in_secs = int(value)
-            elif stanza == "homePath.maxDataSizeMB":
+            elif stanza == "homePath.maxDataSizeMB" and in_index_mode:
                 cur_index.homepath_max_data_size_mb = float(value)
-            elif stanza == "homePath":
+            elif stanza == "homePath" and in_index_mode:
                 cur_index.home_path = value
-            elif stanza == "coldPath":
+            elif stanza == "coldPath" and in_index_mode:
                 cur_index.cold_path = value
-            elif stanza == "maxDataSize":
+            elif stanza == "maxDataSize" and in_index_mode:
                 cur_index.max_data_size = value
                 if cur_index.max_data_size.find("auto_high_volume") != -1:
                     cur_index.max_data_size = "10240_auto"
                 elif cur_index.max_data_size.find("auto") != -1:
                     cur_index.max_data_size = "750_auto"
-            elif stanza == "maxHotBuckets":
+            elif stanza == "maxHotBuckets" and in_index_mode:
                 cur_index.max_hot_buckets = float(value)
             # This setting only appears in volumes
-            elif stanza == "maxVolumeDataSizeMB":
+            elif stanza == "maxVolumeDataSizeMB" and not in_index_mode:
                 vol.max_vol_data_size_mb = int(value)
                 logger.debug("Recording vol=%s into volumes dict" % (vol.name))
                 volumes[vol.name] = vol
-            elif stanza == "maxTotalDataSizeMB":
+            elif stanza == "maxTotalDataSizeMB" and in_index_mode:
                 cur_index.max_total_data_size_mb = int(value)
-            elif stanza == "thawedPath":
+            elif stanza == "thawedPath" and in_index_mode:
                 cur_index.thawed_path = value
             # btool prints in lexicographical order so therefore we can assume
             # tstatsHomePath is last for an index
-            elif stanza == "tstatsHomePath":
+            elif stanza == "tstatsHomePath" and in_index_mode:
                 # Do not record disabled indexes
                 if disabled:
                     disabled = False
                     continue
-                cur_index.tstats_home_path = value
+                if hasattr(cur_index, "tstats_home_path"):
+                    if conf_file.find("/system/default"):
+                        logger.debug("Not overriding tstats_home_path=%s with value=%s for index=%s from conf_file=%s" % (cur_index.tstats_home_path, value, cur_index.name, conf_file))
+                    else:
+                        logger.info("Overriding tstats_home_path=%s with value=%s for index=%s from conf_file=%s" % (cur_index.tstats_home_path, value, cur_index.name, conf_file))
+                        cur_index.tstats_home_path = value
+                else:
+                    cur_index.tstats_home_path = value
                 # btool uses alphabetical order so this is the last entry in
                 # the list
                 indexes[cur_index.name] = cur_index
