@@ -192,14 +192,7 @@ class utility:
                 if disabled:
                     disabled = False
                     continue
-                if hasattr(cur_index, "tstats_home_path"):
-                    if conf_file.find("/system/default"):
-                        logger.debug("Not overriding tstats_home_path=%s with value=%s for index=%s from conf_file=%s" % (cur_index.tstats_home_path, value, cur_index.name, conf_file))
-                    else:
-                        logger.info("Overriding tstats_home_path=%s with value=%s for index=%s from conf_file=%s" % (cur_index.tstats_home_path, value, cur_index.name, conf_file))
-                        cur_index.tstats_home_path = value
-                else:
-                    cur_index.tstats_home_path = value
+                cur_index.tstats_home_path = value
                 # btool uses alphabetical order so this is the last entry in
                 # the list
                 indexes[cur_index.name] = cur_index
