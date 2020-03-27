@@ -409,6 +409,8 @@ for stanza in entries_not_found:
         config_entry = "null_" + index_name
         default_option = "TRANSFORMS-null"
 
+    transform_option = False
+
     if props_config.has_section(stanza_name):
         # we do not know which file but we know the stanza exists somewhere...
         logger.debug("stanza=[%s] is defined within config" % (stanza_name))
@@ -419,41 +421,80 @@ for stanza in entries_not_found:
             chosen_transform = False
             possible_options = []
             preferred_option = False
-            # If we have a transform called route use that one
+
+            expected_regex = "^" + index_name + "$"
+            alt_regex = "^(" + index_name + ")$"
+
             for option in options:
+                # if we have a transform called route use that one
                 if option.find("TRANSFORMS-") == 0:
                     possible_options.append(option)
-                    # preferred names are TRANSFORMS-route or TRANSFORMS-null if they exist
-                    if (option.find("route") and data[stanza]['config'] == 'route') or (option.find("null") and data[stanza]['config'] == 'nullQueue'):
-                        preferred_option = option
-            # If we didn't find one use the first transform as updating an existing TRANSFORM- is preferred over creating new ones
-            if not preferred_option:
-                preferred_option = possible_options[0]
-            logger.debug("preferred_option=%s will be updated with the new routing option" % (preferred_option))
-            chosen_config = props_config.get(stanza_name, preferred_option)
-            # The chosen config will have one or more options, we just want to add one more...
-            new_config = chosen_config + ", " + config_entry
 
-            # At this point we now that the required stanza is in a props.conf somewhere, but we cannot be sure which props.conf it is
-            # therefore we need to locate the individual file and parse only *it* so we can then output it with any required updates
-            filename = get_config_file(props_files, stanza_name, preferred_option)
+                    # In add_mode we may want to add one more entry into the FORMAT= of the transform
+                    # if we have a transform that is updating the TCP or syslog routing...
+                    # this makes things more complicated as we cannot just add a new transforms.conf stanza + update the existing props.conf file
+                    if 'add_mode' in data[stanza] and config == 'route':
+                        # obtain the list of TRANSFORMS-example = x,y,z
+                        transforms_value = props_config.get(stanza_name, option)
+                        logger.debug("props.conf stanza=%s for option=%s found transforms values=%s" % (stanza_name, option, transforms_value))
+                        transform_list = [ val.strip() for val in transforms_value.split(",") ]
+                        for a_transform in transform_list:
+                            if transforms_config.has_option(a_transform, 'DEST_KEY'):
+                                dest_key = transforms_config.get(a_transform, 'DEST_KEY')
+                                logger.debug("props.conf stanza=%s option=%s transforms.conf DEST_KEY=%s output_type=%s" % (stanza_name, option, dest_key, output_type))
+                                # if a transform has the required routing key, we use that one...
+                                if (dest_key == '_TCP_ROUTING' and output_type == "tcp") or\
+                                   (dest_key == '_SYSLOG_ROUTING' and output_type == "syslog"):
+                                    if transforms_config.has_option(a_transform, 'SOURCE_KEY') and transforms_config.get(a_transform, 'SOURCE_KEY') == "_MetaData:Index" \
+                                    and (transforms_config.get(a_transform, 'REGEX') == expected_regex \
+                                    or transforms_config.get(a_transform, 'REGEX') == alt_regex):
+                                        logger.info("transform=%s is routing to the expected type of data, and the regex matches the index in question..." % (a_transform))
+                                        transform_option = a_transform
+                                        break
+                                    elif transforms_config.has_option(a_transform, 'SOURCE_KEY'):
+                                        logger.debug("transforms.conf stanza=%s option=%s transforms.conf SOURCE_KEY=%s" % (a_transform, option, transforms_config.get(a_transform, 'SOURCE_KEY')))
+                                        if transforms_config.has_option(a_transform, 'REGEX'):
+                                            logger.debug("transforms.conf stanza=%s REGEX=%s did not match regex=%s or regex=%s" % (a_transform, transforms_config.get(a_transform, 'REGEX'), expected_regex, alt_regex))
 
-            # Is this file already in the list of files that we need to update?
-            if not filename in props_file_update_dict:
-                props_file_update_dict[filename] = {}
-            # Is this stanza in the dict already?
-            if not stanza_name in props_file_update_dict[filename]:
-                props_file_update_dict[filename][stanza_name] = {}
-            # Is the option/entry from the stanza that we want to update already in the update list?
-            if not preferred_option in props_file_update_dict[filename][stanza_name]:
-                # It is not, our config goes in as-is
-                props_file_update_dict[filename][stanza_name][preferred_option] = {}
-                props_file_update_dict[filename][stanza_name][preferred_option]['config'] = new_config
+                    if transform_option != False:
+                        break
+                # preferred names are TRANSFORMS-route or TRANSFORMS-null if they exist
+                if (option.find("route") and data[stanza]['config'] == 'route') or (option.find("null") and data[stanza]['config'] == 'nullQueue'):
+                    preferred_option = option
+
+            if not transform_option:
+                # If we didn't find one use the first transform as updating an existing TRANSFORM- is preferred over creating new ones
+                if not preferred_option:
+                    preferred_option = possible_options[0]
+                logger.debug("preferred_option=%s will be updated with the new routing option" % (preferred_option))
+                chosen_config = props_config.get(stanza_name, preferred_option)
+
+                # The chosen config will have one or more options, we just want to add one more...
+                new_config = chosen_config + ", " + config_entry
+
+                # At this point we now that the required stanza is in a props.conf somewhere, but we cannot be sure which props.conf it is
+                # therefore we need to locate the individual file and parse only *it* so we can then output it with any required updates
+                filename = get_config_file(props_files, stanza_name, preferred_option)
+
+                # Is this file already in the list of files that we need to update?
+                if not filename in props_file_update_dict:
+                    props_file_update_dict[filename] = {}
+                # Is this stanza in the dict already?
+                if not stanza_name in props_file_update_dict[filename]:
+                    props_file_update_dict[filename][stanza_name] = {}
+                # Is the option/entry from the stanza that we want to update already in the update list?
+                if not preferred_option in props_file_update_dict[filename][stanza_name]:
+                    # It is not, our config goes in as-is
+                    props_file_update_dict[filename][stanza_name][preferred_option] = {}
+                    props_file_update_dict[filename][stanza_name][preferred_option]['config'] = new_config
+                else:
+                    # There is config getting updated so we just need to add our new entry to the end of the current config
+                    props_file_update_dict[filename][stanza_name][preferred_option]['config'] = props_file_update_dict[filename][stanza_name][preferred_option]['config'] + ", " + config_entry
+
+                logger.info("Adding file=%s to update list new_config=%s added to entry=%s within stanza=%s" % (filename, props_file_update_dict[filename][stanza_name][preferred_option]['config'], preferred_option, stanza_name))
             else:
-                # There is config getting updated so we just need to add our new entry to the end of the current config
-                props_file_update_dict[filename][stanza_name][preferred_option]['config'] = props_file_update_dict[filename][stanza_name][preferred_option]['config'] + ", " + config_entry
-
-            logger.info("Adding file=%s to update list new_config=%s added to entry=%s within stanza=%s" % (filename, props_file_update_dict[filename][stanza_name][preferred_option]['config'], preferred_option, stanza_name))
+                filename = get_config_file(transforms_files, transform_option)
+                logger.info("props.conf file will not need an update as transform stanza=%s will have the additional output added to it in file=%s" % (transform_option, filename))
         # else there is no current TRANSFORMS- entries for this entry with the said stanza...
         else:
             filename = get_config_file(props_files, stanza_name)
@@ -504,7 +545,7 @@ for stanza in entries_not_found:
     if 'default_output' in data[stanza]:
         output_name = data[stanza]['default_output'] + ", " + output_name
 
-    if 'addMode' in data[stanza]:
+    if 'add_mode' in data[stanza]:
         add_mode = True
     else:
         add_mode = False
@@ -512,6 +553,10 @@ for stanza in entries_not_found:
     # if the transform file is not listed already
     if not filename in transform_file_update_dict:
         transform_file_update_dict[filename] = {}
+
+    if transform_option: 
+        # since we are no longer creating the new transforms.conf stanza (variable config_entry) override it with the existing transform we will use
+        config_entry =  transform_option
     # if we don't have an entry for this particular transform stanza name
     if not config_entry in transform_file_update_dict[filename]:
         transform_file_update_dict[filename][config_entry] = {}
@@ -525,7 +570,7 @@ for stanza in entries_not_found:
 # for each props.conf file we need to work with
 for filename in props_file_update_dict:
     for stanza in props_file_update_dict[filename]:
-        # find the relevant TRANSFORM- line wto be updated
+        # find the relevant TRANSFORM- line to be updated
         for entry in props_file_update_dict[filename][stanza]:
             updated_line = props_file_update_dict[filename][stanza][entry]['config']
             if 'default_option' in props_file_update_dict[filename][stanza][entry]:
@@ -568,25 +613,32 @@ for filename in transform_file_update_dict:
         output_name = shortcut['output_name']
         add_mode = shortcut['add_mode']
 
+        logger.debug("working with filename=%s transform stanza=%s index_name=%s dest_key=%s output_name=%s add_mode=%s" % (filename, stanza, index_name, dest_key, output_name, add_mode))
         # We want to only add new entries to this and not remove any existing outputs...
         if add_mode and transforms_config.has_option(stanza, "FORMAT"):
             format = transforms_config.get(stanza, "FORMAT")
             format_list = [ val.strip() for val in format.split(",") ]
             output_list = [ val.strip() for val in output_name.split(",") ]
             new_output_list = list(set(format_list+output_list))
-            output_name = " , ".join(new_output_list)
+            output_name = ", ".join(new_output_list)
 
         if args.mode == 'simulate':
-            logger.info("would update filename=%s stanza=%s REGEX=^%s$ DEST_KEY=%s FORMAT=%s" % (filename, stanza, index_name, dest_key, output_name))
-        else:
-            # if the file does exist we append an include a newline...
-            if os.path.isfile(filename):
-                with open(filename, 'a') as file:
-                    file.write("\n")
-                    write_to_file(file, stanza, index_name, dest_key, output_name)
+            if add_mode:
+                logger.info("would update filename=%s stanza=%s FORMAT=%s" % (filename, stanza, output_name))
             else:
-                with open(filename, 'w') as file:
-                    write_to_file(file, stanza, index_name, dest_key, output_name)
+                logger.info("would update filename=%s stanza=%s REGEX=^%s$ DEST_KEY=%s FORMAT=%s" % (filename, stanza, index_name, dest_key, output_name))
+        else:
+            if add_mode:
+                update_config_file(filename, stanza, "FORMAT", output_name)
+            else:
+                # if the file does exist we append an include a newline...
+                if os.path.isfile(filename):
+                    with open(filename, 'a') as file:
+                        file.write("\n")
+                        write_to_file(file, stanza, index_name, dest_key, output_name)
+                else:
+                    with open(filename, 'w') as file:
+                        write_to_file(file, stanza, index_name, dest_key, output_name)
 
 # we have dealt with the props/transforms side, but what about inputs.conf files? Sometimes we can route directly from inputs.conf
 for input_stanza in input_entries_not_found:
@@ -630,7 +682,7 @@ for input_stanza in input_entries_not_found:
         output_entry_list = [ val.strip() for val in output_entry.split(",") ]
         output_list = [ val.strip() for val in output_name.split(",") ]
         new_output_list = list(set(output_entry_list+output_list))
-        output_name = " , ".join(new_output_list)
+        output_name = ", ".join(new_output_list)
 
     if output_type == 'TCP':
         key = "_TCP_ROUTING"
