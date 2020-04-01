@@ -153,11 +153,11 @@ def update_config_file(filename, stanza, entry, updated_line, new_entry=False):
             logger.debug("stanza=%s within file=%s" % (cur_stanza, filename))
 
         if cur_stanza == stanza:
-           logger.debug("Found stanza=%s in filename=%s" % (cur_stanza, filename))
+           logger.debug("In stanza=%s in filename=%s" % (cur_stanza, filename))
            if not new_entry and re.match(r"^" + entry + "\s*=",line) != None:
                logger.info("file=%s line=%s will become line=%s = %s within stanza=%s" % (filename, line[:-1], entry, updated_line, cur_stanza))
                line = entry + " = " + updated_line + "\n"
-           elif new_entry and re.match(r"^\s*$", line) != None:
+           elif new_entry and re.match(r"^\s*$", line) != None and not new_entry_written:
                logger.info("file=%s line=%s will have %s = %s added within stanza=%s" % (filename, line[:-1], entry, updated_line, cur_stanza))
                line = entry + " = " + updated_line + "\n" + line
                new_entry_written = True
@@ -165,7 +165,7 @@ def update_config_file(filename, stanza, entry, updated_line, new_entry=False):
         print line,
     if new_entry and not new_entry_written:
         logger.info("Hit end of file but have not written this line, %s = %s, it will be written to file=%s at the end (in stanza=%s)" % (entry, updated_line, filename, stanza))
-        with open(filename, 'a'):
+        with open(filename, 'a') as file:
             file.write("%s = %s" % (entry, updated_line))
 
 # Provided with a filename, and the stanza
@@ -604,17 +604,20 @@ for stanza in entries_not_found:
 
     if transform_option: 
         # since we are no longer creating the new transforms.conf stanza (variable config_entry) override it with the existing transform we will use
-        config_entry =  transform_option
+        config_entry = transform_option
     # if we don't have an entry for this particular transform stanza name
     if not config_entry in transform_file_update_dict[filename]:
         transform_file_update_dict[filename][config_entry] = {}
 
+    logger.debug("updating transform_file_update_dict filename=%s config_entry=%s index_name=%s dest_key=%s output_name=%s add_mode=%s remove_mode=%s" %
+                (filename, config_entry, index_name, dest_key, output_name, add_mode, remove_mode))
     # We might be updating an existing entry but the transform names should be unique so this should be harmless
     transform_file_update_dict[filename][config_entry]['index_name'] = index_name
     transform_file_update_dict[filename][config_entry]['dest_key'] = dest_key
     transform_file_update_dict[filename][config_entry]['output_name'] = output_name
     transform_file_update_dict[filename][config_entry]['add_mode'] = add_mode
     transform_file_update_dict[filename][config_entry]['remove_mode'] = remove_mode 
+    transform_file_update_dict[filename][config_entry]['transform_name'] = transform_option
 
 # for each props.conf file we need to work with
 for filename in props_file_update_dict:
@@ -638,7 +641,7 @@ for filename in props_file_update_dict:
                     # the TRANSFORMS- in question needs to be commented out as we are removing it from the config...
                     comment_config_file(filename, stanza, entry)
                 else:
-                    logger.error("updating file filename=%s stanza=%s entry=%s" % (filename, stanza, entry))
+                    logger.debug("updating file filename=%s stanza=%s entry=%s" % (filename, stanza, entry))
                     # actually update the file
                     update_config_file(filename, stanza, entry, updated_line, new_entry)
 
@@ -671,6 +674,7 @@ for filename in transform_file_update_dict:
         output_name = shortcut['output_name']
         add_mode = shortcut['add_mode']
         remove_mode = shortcut['remove_mode']
+        transform_name = shortcut['transform_name']
 
         logger.debug("working with filename=%s transform stanza=%s index_name=%s dest_key=%s output_name=%s add_mode=%s" % (filename, stanza, index_name, dest_key, output_name, add_mode))
         # We want to only add new entries to this and not remove any existing outputs...
@@ -695,7 +699,7 @@ for filename in transform_file_update_dict:
             else:
                 logger.info("would update filename=%s stanza=%s REGEX=^%s$ DEST_KEY=%s FORMAT=%s" % (filename, stanza, index_name, dest_key, output_name))
         else:
-            if add_mode:
+            if add_mode and transform_name != False:
                 update_config_file(filename, stanza, "FORMAT", output_name)
             elif remove_mode:
                 comment_config_file(filename, stanza)
@@ -725,13 +729,13 @@ for input_stanza in input_entries_not_found:
     if config == "nullQueue":
         output_type = "nullQueue"
     else:
-        output_type = data[data_entry]['output_type']
+        output_type = data[data_entry]['output_type'].lower()
 
     new_entry = True
     if config == "nullQueue":
         # if we attempt to nullQueue an inputs.conf entry we actually want to comment out the said entry
         logger.info("filename=%s stanza=%s requires commenting out / removal" % (filename, input_stanza))
-    elif inputs_config.has_option(input_stanza, '_TCP_ROUTING') and output_type == 'TCP':
+    elif inputs_config.has_option(input_stanza, '_TCP_ROUTING') and output_type == 'tcp':
         new_entry = False
         output_entry = inputs_config.get(input_stanza, '_TCP_ROUTING')
 
@@ -758,12 +762,14 @@ for input_stanza in input_entries_not_found:
         new_output_list = list(set(output_entry_list) - set(output_list))
         output_name = ", ".join(new_output_list)
 
-    if output_type == 'TCP':
+    if output_type == 'tcp':
         key = "_TCP_ROUTING"
     elif output_type == 'syslog':
         key = "_SYSLOG_ROUTING"
         if not new_entry:
             logger.info("filename=%s stanza=%s _SYSLOG_ROUTING only works on Splunk enterprise servers and not Universal Forwarders, please ensure this inputs.conf is not on a UF" % (filename, input_stanza))
+    else:
+        logger.info("output_type=%s" % (output_type))
 
     if args.mode == 'simulate':
         if config == "nullQueue":
