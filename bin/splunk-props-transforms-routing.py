@@ -81,7 +81,7 @@ logger = logging.getLogger()
 parser = argparse.ArgumentParser(description='Create or confirm the routing configuration to particular outputs based on a yaml configuration file', epilog=\
 """The JSON based config file follows a particular format...:
 In the below example it routes apache:access (a sourcetype) to the syslog-type output of forwarders_45704 but only for the index example
-Other options available include: output_type: TCP, config: nullQueue, output_name: nullQueue, default_output: default_group_from_outputs.conf, name: optional_override_name, add_mode: <any value>
+Other options available include: output_type: TCP, config: nullQueue, output_name: nullQueue, default_output: default_group_from_outputs.conf, name: optional_override_name, add_mode: <any value>, remove_mode: <any value>
 You can comma separate as many entries as you wish within the JSON file (whitespace is lost when printing help FYI):
 {
     "apache:access":{
@@ -94,6 +94,7 @@ You can comma separate as many entries as you wish within the JSON file (whitesp
 Note that each name (in the above apache:access) must be unique, but you can use the name: entry to apply multiple routing options to a single sourcetype if required
 Also note that if add_mode exists then the new setting will be appended to the existing settings if they exist. i.e. if _TCP_ROUTING=default,example and output_name=example2, all 3 will be added.
 Otherwise _TCP_ROUTING=example2 (or default,example2 if output_default was set to default)
+remove_mode is the opposite of add mode, it removes the _TCP_ROUTING setting if it exists or removes the required entry from _TCP_ROUTING
 """)
 parser.add_argument('-location', help='[dir] The directory where the props/transforms/inputs are located, props/transforms/inputs will be found recursively', required=True)
 parser.add_argument('-mode', help='Should this check for the expected config, show what would get updated or update props/transforms/inputs', required=True, choices=['check','simulate','update'])
@@ -169,7 +170,7 @@ def update_config_file(filename, stanza, entry, updated_line, new_entry=False):
 
 # Provided with a filename, and the stanza
 # comment out the said stanza...
-def comment_config_file(filename, stanza):
+def comment_config_file(filename, stanza, target_entry=False):
     cur_stanza = None
 
     for line in fileinput.input(filename, inplace=True):
@@ -179,8 +180,11 @@ def comment_config_file(filename, stanza):
             logger.debug("stanza=%s within file=%s" % (cur_stanza, filename))
 
         if cur_stanza == stanza and line.find("#") != 0 and len(line)>1:
-            # python 2, do not add extra newlines...
-            line = "#" + line
+            if (not target_entry) or (target_entry and line.find(target_entry) == 0):
+                # either we have a target entry and we found it comment it out
+                # or we are in the target stanz and we comment the block...
+                # python 2, do not add extra newlines...
+                line = "#" + line
         print line,
 
 # Provided with a file handle, stanza, index, dest_key and format write this into a transforms.conf file
@@ -291,6 +295,11 @@ for stanza in data:
     else:
         stanza_name = stanza
 
+    if 'remove_mode' in data[stanza]:
+        remove_mode = True
+    else:
+        remove_mode = False
+
     # if we see an inputs.conf entry that matches the sourcetype in question...
     if stanza_name in inputs_sourcetype_dict:
         stanza_list_in_config = inputs_sourcetype_dict[stanza_name]
@@ -322,8 +331,11 @@ for stanza in data:
                 if output_name in syslog_routing_settings_list and 'output_type' in data[stanza] and data[stanza]['output_type'] == "syslog":
                     logger.info("Found stanza=%s index=%s inputs.conf stanza=%s _SYSLOG_ROUTING=%s as expected" % (stanza, index_name, stanza_in_config, syslog_routing_settings_list))
                     found_input = True
-            if not found_input:
+            if not found_input and not remove_mode:
                 logger.info("Unable to find an entry for stanza=%s index=%s in inputs.conf routing to output=%s adding inputs.conf stanza=%s to the list" % (stanza, index_name, output_name, stanza_in_config))
+                input_entries_not_found[stanza_in_config] = stanza
+            elif found_input and remove_mode:
+                logger.info("Found entry for stanza=%s index=%s in inputs.conf routing to output=%s adding inputs.conf stanza=%s to the list to remove entry" % (stanza, index_name, output_name, stanza_in_config))
                 input_entries_not_found[stanza_in_config] = stanza
 
     if stanza_name in props_entries:
@@ -360,12 +372,16 @@ for stanza in data:
                                            logger.debug("For stanza=%s found transform=%s REGEX=%s SOURCE_KEY=%s, DEST_KEY=%s FORMAT=%s" % (stanza_name, transform, regex, source_key, dest_key, format))
         if found:
             logger.info("For stanza=%s found an entry performing the required routing" % (stanza_name))
+            if remove_mode:
+                logger.info("stanza=%s will be added to remove list" % (stanza_name))
+                entries_not_found.append(stanza)
         else:
             logger.info("For stanza=%s, did not find an entry in props/transforms location=%s to perform the required routing for config stanza=%s" % (stanza_name, args.location, stanza))
             entries_not_found.append(stanza)
     else:
         logger.info("No props.conf stanza containing a TRANSFORMS- entry was found for stanza=%s in location=%s for config entry=%s" % (stanza_name, args.location, stanza))
-        entries_not_found.append(stanza)
+        if not remove_mode:
+            entries_not_found.append(stanza)
 
 logger.info("The following props.conf stanzas did not have transforms.conf stanzas matching the required index_name: %s" % (entries_not_found))
 logger.info("The following inputs.conf stanzas did not have the required _TCP_ROUTING or _SYSLOG_ROUTING that was requested: %s" % (input_entries_not_found))
@@ -411,6 +427,14 @@ for stanza in entries_not_found:
 
     transform_option = False
 
+    if 'remove_mode' in data[stanza]:
+        remove_mode = True
+    else:
+        remove_mode = False
+
+    filename = False
+    props_remove_update = False
+
     if props_config.has_section(stanza_name):
         # we do not know which file but we know the stanza exists somewhere...
         logger.debug("stanza=[%s] is defined within config" % (stanza_name))
@@ -433,7 +457,7 @@ for stanza in entries_not_found:
                     # In add_mode we may want to add one more entry into the FORMAT= of the transform
                     # if we have a transform that is updating the TCP or syslog routing...
                     # this makes things more complicated as we cannot just add a new transforms.conf stanza + update the existing props.conf file
-                    if 'add_mode' in data[stanza] and config == 'route':
+                    if ('add_mode' in data[stanza] and config == 'route') or (remove_mode and config == 'route'):
                         # obtain the list of TRANSFORMS-example = x,y,z
                         transforms_value = props_config.get(stanza_name, option)
                         logger.debug("props.conf stanza=%s for option=%s found transforms values=%s" % (stanza_name, option, transforms_value))
@@ -457,12 +481,15 @@ for stanza in entries_not_found:
                                             logger.debug("transforms.conf stanza=%s REGEX=%s did not match regex=%s or regex=%s" % (a_transform, transforms_config.get(a_transform, 'REGEX'), expected_regex, alt_regex))
 
                     if transform_option != False:
+                        if remove_mode and len(transform_list) == 1:
+                            # we are in remove_mode but the TRANSFORM- entry needs to be changed as well as it only had 1 entry
+                            props_remove_update = True
                         break
                 # preferred names are TRANSFORMS-route or TRANSFORMS-null if they exist
                 if (option.find("route") and data[stanza]['config'] == 'route') or (option.find("null") and data[stanza]['config'] == 'nullQueue'):
                     preferred_option = option
 
-            if not transform_option:
+            if not transform_option and not remove_mode:
                 # If we didn't find one use the first transform as updating an existing TRANSFORM- is preferred over creating new ones
                 if not preferred_option:
                     preferred_option = possible_options[0]
@@ -492,11 +519,27 @@ for stanza in entries_not_found:
                     props_file_update_dict[filename][stanza_name][preferred_option]['config'] = props_file_update_dict[filename][stanza_name][preferred_option]['config'] + ", " + config_entry
 
                 logger.info("Adding file=%s to update list new_config=%s added to entry=%s within stanza=%s" % (filename, props_file_update_dict[filename][stanza_name][preferred_option]['config'], preferred_option, stanza_name))
-            else:
-                filename = get_config_file(transforms_files, transform_option)
-                logger.info("props.conf file will not need an update as transform stanza=%s will have the additional output added to it in file=%s" % (transform_option, filename))
-        # else there is no current TRANSFORMS- entries for this entry with the said stanza...
-        else:
+            elif transform_option != False:
+                filename = get_config_file(props_files, stanza_name, option)
+                if remove_mode:
+                    keyword1 = "will"
+                    keyword2 = "removed from"
+                    # Is this file already in the list of files that we need to update?
+                    if not filename in props_file_update_dict:
+                        props_file_update_dict[filename] = {}
+                    if not stanza_name in props_file_update_dict[filename]:
+                        props_file_update_dict[filename][stanza_name] = {}
+                    # Is the option/entry from the stanza that we want to update already in the update list?
+                    if not preferred_option in props_file_update_dict[filename][stanza_name]:
+                        # It is not, our config goes in as-is
+                        props_file_update_dict[filename][stanza_name][option] = {}
+                        props_file_update_dict[filename][stanza_name][option]['config'] = 'remove'
+                else:
+                    keyword1 = "will not"
+                    keyword2 = "added to"
+                logger.info("props.conf file %s need an update as transform stanza=%s will have the additional output %s in file=%s" % (keyword1, transform_option, keyword2, filename))
+        elif not remove_mode:
+            # else there is no current TRANSFORMS- entries for this entry with the said stanza...
             filename = get_config_file(props_files, stanza_name)
             # Is this file already in the list of files that we need to update?
             if not filename in props_file_update_dict:
@@ -514,8 +557,8 @@ for stanza in entries_not_found:
                 # There is config getting updated so we just need to add our new entry to the end of the current config
                 props_file_update_dict[filename][stanza_name][default_option]['config'] = props_file_update_dict[filename][stanza_name][default_option]['config'] + ", " + config_entry
             logger.info("Adding file=%s to update list new_config=%s added to entry=%s within stanza=%s" % (filename, props_file_update_dict[filename][stanza_name][default_option]['config'], default_option, stanza_name))
-    # else we never had a props.conf entry found so we have to create one...
-    else:
+    elif not remove_mode:
+        # else we never had a props.conf entry found so we have to create one...
         if not args.configdir:
             logger.error("The stanza=%s is not found in any props.conf file and the -configdir argument was not passed in. Please pass in -configdir or create the stanza within a props.conf file" \
             % (stanza_name))
@@ -527,6 +570,11 @@ for stanza in entries_not_found:
             new_config_parser.add_section(stanza_name)
             new_sections_added.append(stanza_name)
         new_config_parser.set(stanza_name, default_option, config_entry)
+
+    if remove_mode and not filename:
+        # we do not have a filename that contains our configuration that needs removing so we can stop at this point
+        logger.debug("filename not specified and remove_mode is true, skipping this iteration of the loop")
+        continue
 
     # At this point we want to add in the transforms.conf entry we need into the required file
     # we know that the transforms.conf stanza we want doesn't exist yet so we create it and hope that our naming standard is unique...
@@ -566,6 +614,7 @@ for stanza in entries_not_found:
     transform_file_update_dict[filename][config_entry]['dest_key'] = dest_key
     transform_file_update_dict[filename][config_entry]['output_name'] = output_name
     transform_file_update_dict[filename][config_entry]['add_mode'] = add_mode
+    transform_file_update_dict[filename][config_entry]['remove_mode'] = remove_mode 
 
 # for each props.conf file we need to work with
 for filename in props_file_update_dict:
@@ -579,10 +628,19 @@ for filename in props_file_update_dict:
                 new_entry = False
 
             if args.mode == 'simulate':
-                logger.info("would update filename=%s stana=%s entry=%s new_line=%s new_entry=%s" % (filename, stanza, entry, updated_line, new_entry))
+                if updated_line == 'remove':
+                    keyword = "remove stanza from"
+                else:
+                    keyword = "update"
+                logger.info("would %s filename=%s stana=%s entry=%s new_line=%s new_entry=%s" % (keyword, filename, stanza, entry, updated_line, new_entry))
             else:
-                # actually update the file
-                update_config_file(filename, stanza, entry, updated_line, new_entry)
+                if updated_line == 'remove':
+                    # the TRANSFORMS- in question needs to be commented out as we are removing it from the config...
+                    comment_config_file(filename, stanza, entry)
+                else:
+                    logger.error("updating file filename=%s stanza=%s entry=%s" % (filename, stanza, entry))
+                    # actually update the file
+                    update_config_file(filename, stanza, entry, updated_line, new_entry)
 
 # If we have new props.conf configuration that doesn't fit into any existing file write it all out now, it goes into a common file...
 if new_config_req:
@@ -612,6 +670,7 @@ for filename in transform_file_update_dict:
         dest_key = shortcut['dest_key']
         output_name = shortcut['output_name']
         add_mode = shortcut['add_mode']
+        remove_mode = shortcut['remove_mode']
 
         logger.debug("working with filename=%s transform stanza=%s index_name=%s dest_key=%s output_name=%s add_mode=%s" % (filename, stanza, index_name, dest_key, output_name, add_mode))
         # We want to only add new entries to this and not remove any existing outputs...
@@ -621,15 +680,25 @@ for filename in transform_file_update_dict:
             output_list = [ val.strip() for val in output_name.split(",") ]
             new_output_list = list(set(format_list+output_list))
             output_name = ", ".join(new_output_list)
+        elif remove_mode and transforms_config.has_option(stanza, "FORMAT"):
+            format = transforms_config.get(stanza, "FORMAT")
+            format_list = [ val.strip() for val in format.split(",") ]
+            output_list = [ val.strip() for val in output_name.split(",") ]
+            new_output_list = list(set(format_list) - set(output_list))
+            output_name = ", ".join(new_output_list)
 
         if args.mode == 'simulate':
             if add_mode:
                 logger.info("would update filename=%s stanza=%s FORMAT=%s" % (filename, stanza, output_name))
+            elif output_name == "":
+                logger.info("would comment out stanza=%s in filename=%s" % (stanza, filename))
             else:
                 logger.info("would update filename=%s stanza=%s REGEX=^%s$ DEST_KEY=%s FORMAT=%s" % (filename, stanza, index_name, dest_key, output_name))
         else:
             if add_mode:
                 update_config_file(filename, stanza, "FORMAT", output_name)
+            elif remove_mode:
+                comment_config_file(filename, stanza)
             else:
                 # if the file does exist we append an include a newline...
                 if os.path.isfile(filename):
@@ -683,6 +752,11 @@ for input_stanza in input_entries_not_found:
         output_list = [ val.strip() for val in output_name.split(",") ]
         new_output_list = list(set(output_entry_list+output_list))
         output_name = ", ".join(new_output_list)
+    elif config != "nullQueue" and not new_entry and 'remove_mode' in data[data_entry]:
+        output_entry_list = [ val.strip() for val in output_entry.split(",") ]
+        output_list = [ val.strip() for val in output_name.split(",") ]
+        new_output_list = list(set(output_entry_list) - set(output_list))
+        output_name = ", ".join(new_output_list)
 
     if output_type == 'TCP':
         key = "_TCP_ROUTING"
@@ -695,13 +769,19 @@ for input_stanza in input_entries_not_found:
         if config == "nullQueue":
             logger.info("would comment out stanza=%s in filename=%s" % (input_stanza, filename))
         else:
-            logger.info("would update filename=%s stanza=%s entry=%s value=%s new_entry=%s" % (filename, input_stanza, key, output_name, new_entry))
+            if 'remove_mode' in data[data_entry] and output_name == "":
+                logger.info("would update filename=%s stanza=%s and comment out entry=%s" % (filename, input_stanza, key))
+            else:
+                logger.info("would update filename=%s stanza=%s entry=%s value=%s new_entry=%s" % (filename, input_stanza, key, output_name, new_entry))
     else:
         if config == "nullQueue":
             comment_config_file(filename, input_stanza)
             logger.info("Updated filename=%s stanza=%s, it is now commented out" % (filename, input_stanza))
         else:
-            update_config_file(filename, input_stanza, key, output_name, new_entry)
+            if 'remove_mode' in data[data_entry] and output_name == "":
+                comment_config-file(filename, input_stanza, key)
+            else:
+                update_config_file(filename, input_stanza, key, output_name, new_entry)
             logger.info("Updated filename=%s stanza=%s entry=%s=%s new=%s" % (filename, input_stanza, key, output_name, new_entry))
 
 logger.info("Script complete")
