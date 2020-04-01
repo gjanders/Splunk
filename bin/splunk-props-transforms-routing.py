@@ -569,7 +569,17 @@ for stanza in entries_not_found:
         if not stanza_name in new_sections_added:
             new_config_parser.add_section(stanza_name)
             new_sections_added.append(stanza_name)
-        new_config_parser.set(stanza_name, default_option, config_entry)
+        if new_config_parser.has_option(stanza_name, default_option):
+            new_config_options = new_config_parser.get(stanza_name, default_option)
+            new_config_opt_list = [ val.strip() for val in new_config_options.split(",") ]
+            if config_entry not in new_config_opt_list:
+                logger.info("Appending option=%s into stanza=%s entry=%s" % (config_entry, stanza_name, default_option))
+                new_config_entry = new_config_options + ", " + config_entry
+                new_config_parser.set(stanza_name, default_option, new_config_entry)
+            else:
+                logger.debug("option=%s already in stanza=%s entry=%s" % (config_entry, stanza_name, default_option))
+        else:
+            new_config_parser.set(stanza_name, default_option, config_entry)
 
     if remove_mode and not filename:
         # we do not have a filename that contains our configuration that needs removing so we can stop at this point
