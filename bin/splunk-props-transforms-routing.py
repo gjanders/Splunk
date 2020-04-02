@@ -214,8 +214,14 @@ for entry in data:
         logger.error("entry=%s is invalid in configuration, config option can only be route or nullQueue" % (entry))
         sys.exit(2)
     if 'output_type' in entry_config and entry_config['output_type'] == "TCP" and not 'default_output' in entry_config:
-        logger.warn("entry=%s is using TCP routing but not a default_output, note this will override routing to only %s and therefore the default route will not get a copy unless add_mode is specified in the config *and* the entry already has a routing entry..." % (entry, entry_config['output_name']))
-        logger.warn("To prevent this situation add the default_output option into the json config file")
+        if 'add_mode' in entry_config:
+            logger.warn("entry=%s is using TCP routing but not a default_output, please check that the default output already exists otherwise this will send traffic only to output=%s. Alternatively, use the default_output option" % (entry, entry_config['output_name']))
+        else:
+            logger.warn("entry=%s is using TCP routing but not a default_output, note this will override routing to only %s and therefore the default route will not get a copy" % (entry, entry_config['output_name']))
+            logger.warn("To prevent this situation add the default_output option into the json config file")
+    if 'add_mode' in entry_config and 'remove_mode' in entry_config:
+        logger.error("Cannot have both add_mode and remove_mode at the same time, choose one and choose wisely")
+        sys.exit(4)
 
 props_files = []
 transforms_files = []
@@ -608,13 +614,19 @@ for stanza in entries_not_found:
     else:
         add_mode = False
 
+    if transform_option:
+        # since we are no longer creating the new transforms.conf stanza (variable config_entry) override it with the existing transform we will use
+        config_entry = transform_option
+
+    if transforms_config.has_section(config_entry):
+        logger.debug("transforms.conf files already have stanza=%s" % (config_entry))
+        continue
+
+    # check if this transform already exists....
     # if the transform file is not listed already
     if not filename in transform_file_update_dict:
         transform_file_update_dict[filename] = {}
 
-    if transform_option: 
-        # since we are no longer creating the new transforms.conf stanza (variable config_entry) override it with the existing transform we will use
-        config_entry = transform_option
     # if we don't have an entry for this particular transform stanza name
     if not config_entry in transform_file_update_dict[filename]:
         transform_file_update_dict[filename][config_entry] = {}
@@ -693,12 +705,14 @@ for filename in transform_file_update_dict:
             format_list = [ val.strip() for val in format.split(",") ]
             output_list = [ val.strip() for val in output_name.split(",") ]
             new_output_list = list(set(format_list+output_list))
+            new_output_list.sort()
             output_name = ", ".join(new_output_list)
         elif remove_mode and transforms_config.has_option(stanza, "FORMAT"):
             format = transforms_config.get(stanza, "FORMAT")
             format_list = [ val.strip() for val in format.split(",") ]
             output_list = [ val.strip() for val in output_name.split(",") ]
             new_output_list = list(set(format_list) - set(output_list))
+            new_output_list.sort()
             output_name = ", ".join(new_output_list)
 
         if args.mode == 'simulate':
@@ -752,8 +766,11 @@ for input_stanza in input_entries_not_found:
         if 'default_output' in data[data_entry]:
             output_name = output_name + ", " + data[data_entry]['default_output']
         else:
-            logger.warn("entry=%s is using TCP routing but not a default_output, note this will override routing to only %s and therefore the default route will not get a copy unless add_mode is specified in the config *and* the entry already has a routing entry..." % (data_entry, output_name))
-            logger.warn("To prevent this situation add the default_output option into the json config file")
+            if 'add_mode' in data[data_entry]:
+                logger.warn("entry=%s is using TCP routing but not a default_output, please check that the default output already exists otherwise this will send traffic only to output=%s. Alternatively, use the default_output option" % (data_entry, output_name))
+            else:
+                logger.warn("entry=%s is using TCP routing but not a default_output, note this will override routing to only %s and therefore the default route will not get a copy" % (data_entry, output_name))
+                logger.warn("To prevent this situation add the default_output option into the json config file")
 
     elif inputs_config.has_option(input_stanza, '_SYSLOG_ROUTING') and output_type == 'syslog':
         new_entry = False
@@ -765,11 +782,13 @@ for input_stanza in input_entries_not_found:
         output_entry_list = [ val.strip() for val in output_entry.split(",") ]
         output_list = [ val.strip() for val in output_name.split(",") ]
         new_output_list = list(set(output_entry_list+output_list))
+        new_output_list.sort()
         output_name = ", ".join(new_output_list)
     elif config != "nullQueue" and not new_entry and 'remove_mode' in data[data_entry]:
         output_entry_list = [ val.strip() for val in output_entry.split(",") ]
         output_list = [ val.strip() for val in output_name.split(",") ]
         new_output_list = list(set(output_entry_list) - set(output_list))
+        new_output_list.sort()
         output_name = ", ".join(new_output_list)
 
     if output_type == 'tcp':
