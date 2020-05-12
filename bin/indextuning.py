@@ -503,9 +503,9 @@ if index_dir_check_res:
     hot_dirs_checked = list(index_dir_check_res["hot_dirs_checked"].keys())
     cold_dirs_checked = list(index_dir_check_res["cold_dirs_checked"].keys())
     summaries_dirs_checked = list(index_dir_check_res["summaries_dirs_checked"].keys())
-    dead_hot_dirs = index_dir_check_res["hotDirsDead"]
-    dead_cold_dirs = index_dir_check_res["coldDirsDead"]
-    dead_summary_dirs = index_dir_check_res["summariesDirsDead"]
+    dead_hot_dirs = index_dir_check_res["hot_dirs_dead"]
+    dead_cold_dirs = index_dir_check_res["cold_dirs_dead"]
+    dead_summary_dirs = index_dir_check_res["summaries_dirs_dead"]
 
     #Note that duplicate values can be returned if the same path is used for hot/cold or summaries, for example /opt/splunk/var/lib/splunk
     #may be duplicated...
