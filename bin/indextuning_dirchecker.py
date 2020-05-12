@@ -25,26 +25,29 @@ def check_for_dead_dirs(index_list, vol_list, excluded_dirs, utility):
         cold_path = index_list[index].cold_path
         tstats_home_path = index_list[index].tstats_home_path
         thawed_path = index_list[index].thawed_path
-        cold_to_frozen_dir = index_list[index].cold_to_frozen_dir
+        if hasattr(index_list[index], "cold_to_frozen_dir"):
+            cold_to_frozen_dir = index_list[index].cold_to_frozen_dir
+        else:
+            cold_to_frozen_dir = False
 
         logger.debug("dead dirs prechanges index=%s home_path=%s cold_path=%s tstats_home_path=%s thawed_path=%s cold_to_frozen_dir=%s" % (index, home_path, cold_path, tstats_home_path, thawed_path, cold_to_frozen_dir))
         # Ok we found a volume, replace it with the full directory path for the dir function to work
         if (home_path.find("volume:") != -1):
             end = home_path.find("/")
             findVol = home_path[7:end]
-            home_path = home_path.replace("volume:%s" % (findVol), vol_list[findVol]["path"])
+            home_path = home_path.replace("volume:%s" % (findVol), vol_list[findVol].path)
 
         # Ok we found a volume, replace it with the full directory path for the dir function to work
         if (cold_path.find("volume:") != -1):
             end = cold_path.find("/")
             findVol = cold_path[7:end]
-            cold_path = cold_path.replace("volume:%s" % (findVol), vol_list[findVol]["path"])
+            cold_path = cold_path.replace("volume:%s" % (findVol), vol_list[findVol].path)
 
         # Ok we found a volume, replace it with the full directory path for the dir function to work
         if (tstats_home_path.find("volume:") != -1):
             end = tstats_home_path.find("/")
             findVol = tstats_home_path[7:end]
-            tstats_home_path = tstats_home_path.replace("volume:%s" % (findVol), vol_list[findVol]["path"])
+            tstats_home_path = tstats_home_path.replace("volume:%s" % (findVol), vol_list[findVol].path)
 
         home_path = home_path.replace("$SPLUNK_DB", splunkDBLoc)
         cold_path = cold_path.replace("$SPLUNK_DB", splunkDBLoc)
@@ -69,7 +72,10 @@ def check_for_dead_dirs(index_list, vol_list, excluded_dirs, utility):
         cold_path = cold_path[:cold_path.rfind("/")]
         tstats_home_path = tstats_home_path[:tstats_home_path.rfind("/")]
         thawed_path = thawed_path[:thawed_path.rfind("/")]
-        cold_to_frozen_dir = cold_to_frozen_dir[:cold_to_frozen_dir.rfind("/")]
+        if hasattr(index_list[index], "cold_to_frozen_dir"):
+            cold_to_frozen_dir = cold_to_frozen_dir[:cold_to_frozen_dir.rfind("/")]
+        else:
+            cold_to_frozen_dir = False
 
         # drop off the /<index dir name> off the end, for example /opt/splunk/var/lib/splunk/_internaldb
         # this leaves a top level directory such as /opt/splunk/var/lib/splunk
@@ -94,9 +100,9 @@ def check_for_dead_dirs(index_list, vol_list, excluded_dirs, utility):
 
     logger.debug("Returning these lists to be checked: dead_index_dir_list_hot=\"%s\", dead_index_dir_list_cold=\"%s\", dead_index_dir_list_summaries=\"%s\", dead_index_dir_list_thawed=\"%s\""
                   % (dead_index_dir_list_hot, dead_index_dir_list_cold, dead_index_dir_list_summaries, dead_index_dir_list_thawed))
-    return { "hotDirsChecked" : index_dirs_to_check_hot, "hotDirsDead": dead_index_dir_list_hot, "coldDirsChecked" : index_dirs_to_check_cold,
-    "coldDirsDead" : dead_index_dir_list_cold, "summariesDirsChecked" : summary_dirs_to_check, "summariesDirsDead" : dead_index_dir_list_summaries,
-    "thawedDirsChecked" : dead_index_dir_list_thawed }
+    return { "hot_dirs_checked" : index_dirs_to_check_hot, "hot_dirs_dead": dead_index_dir_list_hot, "cold_dirs_checked" : index_dirs_to_check_cold,
+    "cold_dirs_dead" : dead_index_dir_list_cold, "summaries_dirs_checked" : summary_dirs_to_check, "summaries_dirs_dead" : dead_index_dir_list_summaries,
+    "thawed_dirs_checked" : dead_index_dir_list_thawed }
 
 def check_dirs(index_list, dirsToCheck, excluded_dirs, utility):
     dead_dir_list = {}
@@ -117,16 +123,21 @@ def check_dirs(index_list, dirsToCheck, excluded_dirs, utility):
             # If we cannot find any mention of this index name then most likely it exists from a previous config / needs cleanup
             abs_dir = dirs + "/" + dir
             for index in index_list:
-                home_path = index_list[index]["home_path"]
+                home_path = index_list[index].home_path
                 home_path = home_path[:home_path.rfind("/")]
-                cold_path = index_list[index]["cold_path"]
+                cold_path = index_list[index].cold_path
                 cold_path = cold_path[:cold_path.rfind("/")]
-                tstats_home_path = index_list[index]["tstats_home_path"]
+                tstats_home_path = index_list[index].tstats_home_path
                 tstats_home_path = tstats_home_path[:tstats_home_path.rfind("/")]
-                thawed_path = index_list[index]["thawed_path"]
+                thawed_path = index_list[index].thawed_path
                 thawed_path = thawed_path[:thawed_path.rfind("/")]
-                cold_to_frozen_dir = index_list[index]["cold_to_frozen_dir"]
-                cold_to_frozen_dir = cold_to_frozen_dir[:cold_to_frozen_dir.rfind("/")]
+                if hasattr(index_list[index], "cold_to_frozen_dir"):
+                    cold_to_frozen_dir = index_list[index].cold_to_frozen_dir
+                    cold_to_frozen_dir2 = index_list[index].cold_to_frozen_dir
+                    cold_to_frozen_dir = cold_to_frozen_dir[:cold_to_frozen_dir.rfind("/")]
+                else:
+                    cold_to_frozen_dir = False
+                    cold_to_frozen_dir2 = False
 
                 # logger.debug("home path is %s" % (home_path))
                 if abs_dir==home_path or abs_dir==cold_path or abs_dir==tstats_home_path or abs_dir==thawed_path or abs_dir==cold_to_frozen_dir:
@@ -163,7 +174,7 @@ def check_dirs(index_list, dirsToCheck, excluded_dirs, utility):
                 abs_dir2 = abs_dir + "/" + a_dir
                 for index in index_list:
                     if abs_dir2==index_list[index].home_path or abs_dir2==index_list[index].cold_path or abs_dir2==index_list[index].tstats_home_path \
-                    or abs_dir2==index_list[index].thawed_path or abs_dir2==index_list[index].cold_to_frozen_dir:
+                    or abs_dir2==index_list[index].thawed_path or abs_dir2==cold_to_frozen_dir2:
                         found2 = True
                         break
                 if not found2:
