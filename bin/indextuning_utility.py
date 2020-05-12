@@ -154,7 +154,7 @@ class utility:
             elif stanza == "path" and not in_index_mode:
                 vol.path = value
             elif stanza == "coldPath.maxDataSizeMB" and in_index_mode:
-                cur_index.coldpath_max_datasize_mb = float(value)
+                cur_index.coldpath_max_datasize_mb = int(value)
             elif stanza == "coldToFrozenDir" and in_index_mode:
                 if value != "":
                     cur_index.cold_to_frozen_dir = value
@@ -163,7 +163,7 @@ class utility:
             elif stanza == "frozenTimePeriodInSecs" and in_index_mode:
                 cur_index.frozen_time_period_in_secs = int(value)
             elif stanza == "homePath.maxDataSizeMB" and in_index_mode:
-                cur_index.homepath_max_data_size_mb = float(value)
+                cur_index.homepath_max_data_size_mb = int(value)
             elif stanza == "homePath" and in_index_mode:
                 cur_index.home_path = value
             elif stanza == "coldPath" and in_index_mode:
@@ -185,6 +185,10 @@ class utility:
                 cur_index.max_total_data_size_mb = int(value)
             elif stanza == "thawedPath" and in_index_mode:
                 cur_index.thawed_path = value
+
+            if not hasattr(cur_index, "home_path"):
+                    logger.warn("index=%s does not have a homePath, not recording this index" % index_name)
+                    continue                
             # btool prints in lexicographical order so therefore we can assume
             # tstatsHomePath is last for an index
             elif stanza == "tstatsHomePath" and in_index_mode:
