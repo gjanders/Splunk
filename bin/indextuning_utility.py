@@ -179,8 +179,6 @@ class utility:
             # This setting only appears in volumes
             elif stanza == "maxVolumeDataSizeMB" and not in_index_mode:
                 vol.max_vol_data_size_mb = int(value)
-                logger.debug("Recording vol=%s into volumes dict" % (vol.name))
-                volumes[vol.name] = vol
             elif stanza == "maxTotalDataSizeMB" and in_index_mode:
                 cur_index.max_total_data_size_mb = int(value)
             elif stanza == "thawedPath" and in_index_mode:
@@ -201,6 +199,9 @@ class utility:
                 # the list
                 indexes[cur_index.name] = cur_index
                 logger.debug("Recording index=%s into indexes dict" % (cur_index.name))
+            elif stanza == "warmToColdScript" and not in_index_mode:
+                logger.debug("Recording vol=%s into volumes dict" % (vol.name))
+                volumes[vol.name] = vol
 
         return indexes, volumes
 
