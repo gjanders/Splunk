@@ -53,12 +53,16 @@ def check_for_dead_dirs(index_list, vol_list, excluded_dirs, utility):
         cold_path = cold_path.replace("$SPLUNK_DB", splunkDBLoc)
         tstats_home_path = tstats_home_path.replace("$SPLUNK_DB", splunkDBLoc)
         thawed_path = thawed_path.replace("$SPLUNK_DB", splunkDBLoc)
+        if cold_to_frozen_dir:
+            cold_to_frozen_dir = cold_to_frozen_dir.replace("$SPLUNK_DB", splunkDBLoc)
 
         # $_index_name is just a variable for the index name stanza
         home_path = home_path.replace("$_index_name", index).replace("//","/").lower()
         cold_path = cold_path.replace("$_index_name", index).replace("//","/").lower()
         tstats_home_path = tstats_home_path.replace("$_index_name", index).replace("//","/").lower()
         thawed_path = thawed_path.replace("$_index_name", index).replace("//","/").lower()
+        if cold_to_frozen_dir:
+            cold_to_frozen_dir = cold_to_frozen_dir.replace("//","/").lower()
 
         # Splunk changes any directory specified in mixed case for home_path/cold_path/tstats_home_path locations to lowercase
         # btool does not therefore we lower() here
@@ -66,13 +70,14 @@ def check_for_dead_dirs(index_list, vol_list, excluded_dirs, utility):
         index_list[index].cold_path = cold_path
         index_list[index].tstats_home_path = tstats_home_path
         index_list[index].thawed_path = thawed_path
+        index_list[index].cold_to_frozen_dir = cold_to_frozen_dir
 
         # Drop off the /db/, /cold_path, or /datamodel directories off the end of, for example /opt/splunk/var/lib/splunk/_internaldb/db
         home_path = home_path[:home_path.rfind("/")]
         cold_path = cold_path[:cold_path.rfind("/")]
         tstats_home_path = tstats_home_path[:tstats_home_path.rfind("/")]
         thawed_path = thawed_path[:thawed_path.rfind("/")]
-        if hasattr(index_list[index], "cold_to_frozen_dir"):
+        if index_list[index].cold_to_frozen_dir:
             cold_to_frozen_dir = cold_to_frozen_dir[:cold_to_frozen_dir.rfind("/")]
         else:
             cold_to_frozen_dir = False
@@ -131,7 +136,7 @@ def check_dirs(index_list, dirsToCheck, excluded_dirs, utility):
                 tstats_home_path = tstats_home_path[:tstats_home_path.rfind("/")]
                 thawed_path = index_list[index].thawed_path
                 thawed_path = thawed_path[:thawed_path.rfind("/")]
-                if hasattr(index_list[index], "cold_to_frozen_dir"):
+                if index_list[index].cold_to_frozen_dir:
                     cold_to_frozen_dir = index_list[index].cold_to_frozen_dir
                     cold_to_frozen_dir2 = index_list[index].cold_to_frozen_dir
                     cold_to_frozen_dir = cold_to_frozen_dir[:cold_to_frozen_dir.rfind("/")]
