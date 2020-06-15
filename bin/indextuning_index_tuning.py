@@ -76,6 +76,8 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
                     logger.info("index=%s is a summary index, could not find average_change_per_day from introspection logs average_change_per_day=0.0" % (index_name))
                     summary_usage_change_per_day = 0.0
                 summary_index = True
+            else:
+                logger.debug("No metadata found for index=%s, please ensure the username can see this index to check for stash sourcetype..." % (index_name))
 
         # Company specific field here, the commented size per day in the indexes.conf file
         sizing_comment = -1
