@@ -540,7 +540,7 @@ if index_dir_check_res:
                 thedir = entry + "/" + line
                 if args.deadIndexDelete and not line == "\\$_index_name":
                     if os.path.isdir(thedir):
-                        logger.info("dir=%s deleted due to not exisitng and deadIndexDelete flag enabled" % (thedir))
+                        logger.info("dir=%s deleted due to not existing and deadIndexDelete flag enabled" % (thedir))
                         shutil.rmtree(thedir)
                     else:
                         logger.warn("dir=%s does not exist, no deletion required" % (thedir))
@@ -560,7 +560,7 @@ if index_dir_check_res:
                 thedir = entry + "/" + line
                 if args.deadIndexDelete and not line == "\\$_index_name":
                     if os.path.isdir(thedir):
-                        logger.info("dir=%s deleted due to not exisitng and deadIndexDelete flag enabled" % (thedir))
+                        logger.info("dir=%s deleted due to not existing and deadIndexDelete flag enabled" % (thedir))
                         shutil.rmtree(thedir)
                     else:
                         logger.warn("dir=%s does not exist, no deletion required" % (thedir))
