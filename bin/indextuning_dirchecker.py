@@ -174,7 +174,7 @@ def check_dirs(index_list, dirsToCheck, excluded_dirs, utility):
             found2 = False
             for a_dir in sub_dir_list:
                 #These are always excluded as they should never be deleted
-                if dir in ["fishbucket", "main", "$_index_name", "kvstore", "persistentstorage"]:
+                if dir in excluded_dirs:
                     continue
                 abs_dir2 = abs_dir + "/" + a_dir
                 for index in index_list:
