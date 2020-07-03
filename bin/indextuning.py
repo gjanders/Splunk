@@ -162,7 +162,7 @@ parser.add_argument('-min_size_to_calculate', help="Minimum bucket size before c
 
 # Exclude default directories from /opt/splunk/var/lib/splunk and should not be deleted as they won't exist in the indexes.conf files
 parser.add_argument('-excludedDirs', help="List of default directories to exclude from been listed in "\
-    " the deletion section", default='kvstore,.snapshots,lost+found,authDb,hashDb,persistentstorage')
+    " the deletion section", default='kvstore,.snapshots,lost+found,authDb,hashDb,persistentstorage,fishbucket,main,$_index_name')
 
 # If the compression ratio is above this level we throw a warning
 parser.add_argument('-upper_comp_ratio_level', help="Comp ratio limit where a warning in thrown rather than calculation "\
