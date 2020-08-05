@@ -161,10 +161,9 @@ for adir in appDirsRequired.keys():
                         #We re-use the LINE_BREAKER stanza but we call it EVENT_BREAKER now
                         #However due to bug SPL-159337 we remove non-capturing regexes as they are not supported
                         eventbreakerstr = result.group(1).replace("?:","")
-                        #Furthermore not all of our existing LINE_BREAKER's include a capturing group, the LINE_BREAKER can handle this
-                        #the event breaker segfaults
+                        #Note in some version of the Splunk forwarder not having a capture group seg faults the UF, no issues in modern versions such as 8.0.5
                         result4 = regex4.search(eventbreakerstr)
-                        eventbreakerstr = eventbreakerstr[0:result4.start()] + " (" + eventbreakerstr[result4.start():] + ")"
+                        eventbreakerstr = eventbreakerstr[0:result4.start()] + eventbreakerstr[result4.start():]
                         res = "EVENT_BREAKER " + eventbreakerstr
                         #print "%s file EVENT_BREAKER %s\n" % (outputFiles[fulldir], eventbreakerstr)
                     else:                        
