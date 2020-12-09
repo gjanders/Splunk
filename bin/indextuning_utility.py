@@ -217,7 +217,7 @@ class utility:
     # maximum storage for all buckets (2 months @ 0.1GB/day @ 50% (15% + 35%)
     # compression)
     def parse_conf_files_for_sizing_comments(self, indexes, conf_files):
-        find_comments_rex = re.compile(r"^#[^@]+@\s+([0-9\.]+)\s*([^/]+)/([^ ]+)")
+        find_comments_rex = re.compile(r"^#[^@]+@\s+([0-9\.]+)\s*([^/%]+)/([^ ]+)")
 
         for a_file in list(conf_files.keys()):
             with open(a_file) as file:
