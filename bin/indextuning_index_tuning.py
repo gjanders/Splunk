@@ -298,6 +298,7 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
                             "a sizing_comment, usage_based_caculated_size=%s, calc_size_per_day_based_on_commented_size=%s"
                             % (index_name, sizing_comment, avg_license_usage_per_day, estimated_days_for_current_size, frozen_time_period_in_days, oldest_data_found, rep_factor_multiplier,
                               usage_based_caculated_size, calc_size_per_day_based_on_commented_size))
+                        do_not_increase = True
 
                 # If the newly calculated size has increased compared to previous size multiplied by the undersizing contingency
                 elif estimated_days_for_current_size < frozen_time_period_in_days:
