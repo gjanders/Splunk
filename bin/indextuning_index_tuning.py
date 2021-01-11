@@ -302,7 +302,7 @@ def run_index_sizing(utility, index_list, index_name_restriction, index_limit, n
                 # If the newly calculated size has increased compared to previous size multiplied by the undersizing contingency
                 elif estimated_days_for_current_size < frozen_time_period_in_days:
                     # We will increase the sizing for this index
-                    logger.info("index=%s requires more sizing max_total_data_size_mb=%s sizing_comment=%s, sizing_comment=%s, frozen_time_period_in_days=%s, avg_license_usage_per_day=%s, "\
+                    logger.info("index=%s requires more sizing max_total_data_size_mb=%s, calc_size_per_day_based_on_commented_size=%s, sizing_comment=%s, frozen_time_period_in_days=%s, avg_license_usage_per_day=%s, "\
                          "oldest data found is days=%s old, rep_factor_multiplier=%s"
                          % (index_name, max_total_data_size_mb, calc_size_per_day_based_on_commented_size, sizing_comment, frozen_time_period_in_days,
                          avg_license_usage_per_day, oldest_data_found, rep_factor_multiplier))
