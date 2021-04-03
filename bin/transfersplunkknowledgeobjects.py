@@ -429,6 +429,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             del anInfo['origName']
             encoded_name = six.moves.urllib.parse.quote(origName.encode('utf-8'))
             encoded_name = encoded_name.replace("/", "%2F")            
+            origName = encoded_name
             logger.debug("%s of type %s overriding name from %s to %s due to origName existing in config dictionary" % (name, type, name, encoded_name))
             objURL = "%s/servicesNS/-/%s/%s/%s?output_mode=json" % (splunk_rest_dest, app, endpoint, encoded_name)
         else:
