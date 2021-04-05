@@ -368,7 +368,7 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
 
                 #REST API does not support the creation of null queue entries as tested in 7.0.5 and 7.2.1, these are also unused on search heads anyway so ignoring these with a warning
                 if type == "fieldtransformations" and "FORMAT" in info and info["FORMAT"] == "nullQueue":
-                    logger.warn("Dropping the transfer of %s of type %s in app context %s with owner %s because nullQueue entries cannot be created via REST API (and they are not required in search heads)" % (info["name"], type, app, info["owner"]))
+                    logger.warning("Dropping the transfer of %s of type %s in app context %s with owner %s because nullQueue entries cannot be created via REST API (and they are not required in search heads)" % (info["name"], type, app, info["owner"]))
                 else:
                     infoList[sharing].append(info)
                     logger.info("Recording %s info for %s in app context %s with owner %s" % (type, info["name"], app, info["owner"]))
@@ -424,14 +424,17 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
         url = "%s/servicesNS/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint)
         objURL = None
         origName = None
-        encoded_name = six.moves.urllib.parse.quote(name.encode('utf-8'))
-        encoded_name = encoded_name.replace("/", "%2F")        
         if 'origName' in anInfo:
             origName = anInfo['origName']
             del anInfo['origName']
-            logger.debug("%s of type %s overriding name from %s to %s due to origName existing in config dictionary" % (name, type, name, origName))
-            objURL = "%s/servicesNS/-/%s/%s/%s?output_mode=json" % (splunk_rest_dest, app, endpoint, origName)
+            encoded_name = six.moves.urllib.parse.quote(origName.encode('utf-8'))
+            encoded_name = encoded_name.replace("/", "%2F")            
+            origName = encoded_name
+            logger.debug("%s of type %s overriding name from %s to %s due to origName existing in config dictionary" % (name, type, name, encoded_name))
+            objURL = "%s/servicesNS/-/%s/%s/%s?output_mode=json" % (splunk_rest_dest, app, endpoint, encoded_name)
         else:
+            encoded_name = six.moves.urllib.parse.quote(name.encode('utf-8'))
+            encoded_name = encoded_name.replace("/", "%2F")
             #datamodels do not allow /-/ (or private / user level sharing, only app level)
             if type == "datamodels":
                 objURL = "%s/servicesNS/%s/%s/%s/%s?output_mode=json" % (splunk_rest_dest, owner, app, endpoint, encoded_name)
@@ -510,12 +513,12 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 elif child.tag.endswith("messages"):
                     for innerChild in child:
                         if innerChild.tag.endswith("msg") and innerChild.attrib["type"]=="ERROR" or "WARN" in innerChild.attrib:
-                            logger.warn("%s of type %s in app %s had a warn/error message of '%s' owner of %s" % (name, type, app, innerChild.text, owner))
+                            logger.warning("%s of type %s in app %s had a warn/error message of '%s' owner of %s" % (name, type, app, innerChild.text, owner))
                             #Sometimes the object appears to be create but is unusable which is annoying, at least provide the warning to the logs
                             #and record it in the failure list for investigation
                             appendToResults(actionResults, 'creationFailure', name)
             if not deletionURL:
-                logger.warn("%s of type %s in app %s did not appear to create correctly, will not attempt to change the ACL of this item" % (name, type, app))
+                logger.warning("%s of type %s in app %s did not appear to create correctly, will not attempt to change the ACL of this item" % (name, type, app))
                 continue
             #Re-owning it to the previous owner
             url = "%s/acl" % (deletionURL)
@@ -529,11 +532,11 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 appendToResults(actionResults, 'creationFailure', name)
                 if res.status_code == 409:
                     if type == "eventtypes":
-                        logger.warn("Received a 409 while changing the ACL permissions of %s of type %s in app %s with URL %s, however eventtypes throw this error and work anyway. Ignoring!" % (name, type, app, url))
+                        logger.warning("Received a 409 while changing the ACL permissions of %s of type %s in app %s with URL %s, however eventtypes throw this error and work anyway. Ignoring!" % (name, type, app, url))
                         continue
                     #Delete the duplicate private object rather than leave it there for no reason
                     url = url[:-4]
-                    logger.warn("Deleting the private object as it could not be re-owned %s of type %s in app %s with URL %s" % (name, type, app, url))
+                    logger.warning("Deleting the private object as it could not be re-owned %s of type %s in app %s with URL %s" % (name, type, app, url))
                     requests.delete(url, auth=(destUsername,destPassword), verify=False)
                     #If we previously recorded success, remove that entry
                     if creationSuccessRes:
@@ -561,7 +564,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             if creationSuccessRes:
                 logger.info("Created %s of type %s in app %s owner is %s sharing level %s" % (name, type, app, owner, sharing))
             else:
-                logger.warn("Atempted to create %s of type %s in app %s owner is %s sharing level %s but failed" % (name, type, app, owner, sharing))
+                logger.warning("Atempted to create %s of type %s in app %s owner is %s sharing level %s but failed" % (name, type, app, owner, sharing))
         else:
             #object exists already
             if override or overrideAlways:
@@ -856,7 +859,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
                 if res.status_code == 409:
                     #Delete the duplicate private object rather than leave it there for no purpose
                     url = url[:-4]
-                    logger.warn("Deleting the private object as it could not be re-owned %s of type macro in app %s with URL %s" % (name, app, url))
+                    logger.warning("Deleting the private object as it could not be re-owned %s of type macro in app %s with URL %s" % (name, app, url))
                     requests.delete(url, auth=(destUsername,destPassword), verify=False)
             else:
                 #Macros always delete with the username in this URL context
@@ -886,7 +889,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
             if objExists == False:
                 appendToResults(macroResults, 'creationFailure', name)
                 popLastResult(macroResults, 'macroCreationSuccess')
-                logger.warn("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
+                logger.warning("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
                 requests.delete(url, auth=(destUsername,destPassword), verify=False)
             else:
                 appendToResults(macroResults, 'updateFailure', name)
@@ -909,7 +912,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
                         popLastResult(macroResults, 'macroCreationSuccess')
                         macroCreationSuccessRes = False
                         url = url[:-4]
-                        logger.warn("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
+                        logger.warning("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
                         requests.delete(url, auth=(destUsername,destPassword), verify=False)
                         appendToResults(macroResults, 'creationFailure', name)
                     else:
@@ -927,7 +930,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
             if macroCreationSuccessRes:
                 logger.info("%s %s of type macro in app %s owner is %s sharing level %s was successful" % (createOrUpdate, name, app, owner, sharing))
             else:
-               logger.warn("%s %s of type macro in app %s owner is %s sharing level %s was not successful, a failure occurred" % (createOrUpdate, name, app, owner, sharing))
+               logger.warning("%s %s of type macro in app %s owner is %s sharing level %s was not successful, a failure occurred" % (createOrUpdate, name, app, owner, sharing))
 
 ###########################
 #
@@ -1116,7 +1119,7 @@ def logCreationFailure(theDict, type, app):
         return
 
     for item in list:
-        logger.warn("In App %s, %s '%s' failed to create" % (app, type, item))
+        logger.warning("In App %s, %s '%s' failed to create" % (app, type, item))
 
 def logStats(resultsDict, type, app):
     successList = []
