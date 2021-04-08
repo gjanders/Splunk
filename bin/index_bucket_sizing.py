@@ -126,7 +126,7 @@ def run_bucket_sizing(utility, index_list, index_name_restriction, index_limit, 
         # So if calculation > calculated_size we do not increase to auto_high_volume
         # if calculated_size < calculated_size we ensure we are using auto setting (not auto_high_volume)
         # Edge case if sizing comment is specified
-        if sizing_comment > 0:
+        if sizing_comment >= 0:
             # If we have a do not lose data flag use the larger of the average license usage or the sizing comment
             if do_not_lose_data_flag:
                 if avg_license_usage_per_day > sizing_comment:
@@ -143,16 +143,16 @@ def run_bucket_sizing(utility, index_list, index_name_restriction, index_limit, 
         calculated_size = (index_comp_ratio * license_calc_size * frozen_time_period_in_days * rep_factor_multiplier)/num_of_indexers
         if (max_hot_buckets * bucket_auto_size) > calculated_size and not summary_index and bucket_size == "10240_auto":
             decrease_required = True
-            logger.debug("index=%s requires a bucket_decrease as it has a (max_hot_buckets=%s * bucket_auto_size=%s) > ((index_comp_ratio=%s * license_calc_size=%s" \
-                " * frozen_time_period_in_days=%s * rep_factor_multiplier=%s) / num_of_indexers=%s)"
+            logger.debug("index=%s requires a bucket_decrease as it has a (max_hot_buckets=%s * bucket_auto_size=%s() > ((index_comp_ratio=%s * license_calc_size=%s" \
+                " * frozen_time_period_in_days=%s * rep_factor_multiplier=%s) / num_of_indexers=%s) == %s"
                 % (index_name, max_hot_buckets, bucket_auto_size, index_comp_ratio, license_calc_size, frozen_time_period_in_days,
-                rep_factor_multiplier, num_of_indexers))
+                rep_factor_multiplier, num_of_indexers, calculated_size))
         elif (max_hot_buckets * 10240) > calculated_size and not summary_index and bucket_size == "750_auto":
             increase_allowed = False
             logger.debug("index=%s lacks the license usage/agreed size for an increase (max_hot_buckets=%s * bucket_auto_size=%s) > ((index_comp_ratio=%s * license_calc_size=%s" \
-                " * frozen_time_period_in_days=%s * rep_factor_multiplier=%s) / num_of_indexers=%s)"
-                % (index_name, max_hot_buckets, bucket_auto_size, index_comp_ratio, license_calc_size, frozen_time_period_in_days, 
-                rep_factor_multiplier, num_of_indexers))
+                " * frozen_time_period_in_days=%s * rep_factor_multiplier=%s) / num_of_indexers=%s) == %s"
+                % (index_name, max_hot_buckets, bucket_auto_size, index_comp_ratio, license_calc_size, frozen_time_period_in_days,
+                rep_factor_multiplier, num_of_indexers, calculated_size))
 
         # If we expect to exceed the auto size in use, go to the auto_high_volume setting, assuming we are not already there
         if perc_diff > 100 and not bucket_size == "10240_auto":
@@ -170,7 +170,7 @@ def run_bucket_sizing(utility, index_list, index_name_restriction, index_limit, 
                 logger.warn("index=%s would require an auto_high_volume (10GB) bucket but it lacks the license usage/agreed size for an increase based on the calculation"  \
                     "(max_hot_buckets=%s * bucket_size=%s) > ((index_comp_ratio=%s * license_calc_size=%s * frozen_time_period_in_days=%s * rep_factor_multiplier=%s)" \
                     " / num_of_indexers=%s)"
-                    % (index_name, max_hot_buckets, bucket_size, index_comp_ratio, license_calc_size, frozen_time_period_in_days, 
+                    % (index_name, max_hot_buckets, bucket_size, index_comp_ratio, license_calc_size, frozen_time_period_in_days,
                     rep_factor_multiplier, num_of_indexers))
             else:
                 requires_change = "bucket"
@@ -200,8 +200,8 @@ def run_bucket_sizing(utility, index_list, index_name_restriction, index_limit, 
                 index_list[index_name].max_data_size = "750_auto"
                 if decrease_required:
                     logger.info("index=%s file=%s current bucket size is auto tuned to maxDataSize=%s, recommended_bucket_size=%s "\
-                        "(will be set to auto (size decrease)), max_hot_buckets=%s this was decreased due to not fitting auto_high_volume into" \
-                        "the allocated index space" 
+                        "(will be set to auto (size decrease)), max_hot_buckets=%s this was decreased due to not fitting auto_high_volume into " \
+                        "the allocated index space"
                         % (index_name, conf_file, bucket_size, recommended_bucket_size, max_hot_buckets))
                 else:
                     logger.info("index=%s file=%s current bucket size is auto tuned to maxDataSize=%s, recommended_bucket_size=%s "\
