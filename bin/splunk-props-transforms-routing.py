@@ -187,6 +187,17 @@ def comment_config_file(filename, stanza, target_entry=False):
                 line = "#" + line
         print line,
 
+def create_indexes_regex(index):
+    if index.find(",") != -1:
+        idx_regex = ""
+        for idx in index.split(","):
+            idx_regex = idx_regex + idx + "|"
+        idx_regex = idx_regex[:-1]
+        idx_regex = "(" + idx_regex + ")"
+    else:
+        idx_regex = index
+    return idx_regex
+
 # Provided with a file handle, stanza, index, dest_key and format write this into a transforms.conf file
 # include a comment that this is auto-generated configuration...
 def write_to_file(file, stanza, index, dest_key, format):
@@ -194,7 +205,7 @@ def write_to_file(file, stanza, index, dest_key, format):
     file.write("# Auto-generated configuration\n")
     file.write("[" + stanza + "]\n")
     file.write("SOURCE_KEY = _MetaData:Index\n")
-    file.write("REGEX = ^" + index + "$\n")
+    file.write("REGEX = ^" + create_indexes_regex(index) + "$\n")
     file.write("DEST_KEY = " + dest_key + "\n")
     file.write("FORMAT = " + format + "\n")
 
@@ -214,14 +225,8 @@ for entry in data:
         logger.error("entry=%s is invalid in configuration, config option can only be route or nullQueue" % (entry))
         sys.exit(2)
     if 'output_type' in entry_config and entry_config['output_type'] == "TCP" and not 'default_output' in entry_config:
-        if 'add_mode' in entry_config:
-            logger.warn("entry=%s is using TCP routing but not a default_output, please check that the default output already exists otherwise this will send traffic only to output=%s. Alternatively, use the default_output option" % (entry, entry_config['output_name']))
-        else:
-            logger.warn("entry=%s is using TCP routing but not a default_output, note this will override routing to only %s and therefore the default route will not get a copy" % (entry, entry_config['output_name']))
-            logger.warn("To prevent this situation add the default_output option into the json config file")
-    if 'add_mode' in entry_config and 'remove_mode' in entry_config:
-        logger.error("Cannot have both add_mode and remove_mode at the same time, choose one and choose wisely")
-        sys.exit(4)
+        logger.warn("entry=%s is using TCP routing but not a default_output, note this will override routing to only %s and therefore the default route will not get a copy unless add_mode is specified in the config *and* the entry already has a routing entry..." % (entry, entry_config['output_name']))
+        logger.warn("To prevent this situation add the default_output option into the json config file")
 
 props_files = []
 transforms_files = []
@@ -347,7 +352,7 @@ for stanza in data:
     if stanza_name in props_entries:
         # we know that there is at least 1 TRANFORMS- entry within the required stanza
         transforms_name = props_entries[stanza_name]
- 
+
         found = False
         for transform in transforms_name:
             if transform in transforms_config.sections():
@@ -366,8 +371,9 @@ for stanza in data:
                                if "REGEX" in the_transform:
                                    regex = transforms_config.get(transform, "REGEX")
                                    logger.debug("REGEX=%s" % (regex))
-                                   expected_regex = "^(" + data[stanza]['index_name'] + ")$"
-                                   alt_regex = "^" + data[stanza]['index_name'] + "$"
+                                   idx_regex = create_indexes_regex(data[stanza]['index_name'])
+                                   expected_regex = "^(" + idx_regex + ")$"
+                                   alt_regex = "^" + idx_regex + "$"
                                    if regex == expected_regex or regex==alt_regex:
                                        format = transforms_config.get(transform, "FORMAT")
                                        format_list = [ val.strip() for val in format.split(",") ]
@@ -425,10 +431,17 @@ for stanza in entries_not_found:
         stanza_name = stanza
 
     if data[stanza]['config'] == 'route':
-        config_entry = "route_" + output_name + "_" + output_type + "_" + index_name
+        config_entry = "route_" + output_name + "_" + output_type
+        if index_name.find(",") == -1:
+            config_entry = config_entry + "_" + index_name
+        else:
+            config_entry = config_entry + "_" + index_name.replace(",","_")[:30]
         default_option = "TRANSFORMS-route"
     else:
-        config_entry = "null_" + index_name
+        if index_name.find(",") == -1:
+            config_entry = "null_" + index_name
+        else:
+            config_entry = "null_multipleindexes"
         default_option = "TRANSFORMS-null"
 
     transform_option = False
@@ -451,9 +464,9 @@ for stanza in entries_not_found:
             chosen_transform = False
             possible_options = []
             preferred_option = False
-
-            expected_regex = "^" + index_name + "$"
-            alt_regex = "^(" + index_name + ")$"
+            idx_regex = create_indexes_regex(index_name)
+            expected_regex = "^" + idx_regex + "$"
+            alt_regex = "^(" + idx_regex + ")$"
 
             for option in options:
                 # if we have a transform called route use that one
@@ -614,19 +627,13 @@ for stanza in entries_not_found:
     else:
         add_mode = False
 
-    if transform_option:
-        # since we are no longer creating the new transforms.conf stanza (variable config_entry) override it with the existing transform we will use
-        config_entry = transform_option
-
-    if transforms_config.has_section(config_entry):
-        logger.debug("transforms.conf files already have stanza=%s" % (config_entry))
-        continue
-
-    # check if this transform already exists....
     # if the transform file is not listed already
     if not filename in transform_file_update_dict:
         transform_file_update_dict[filename] = {}
 
+    if transform_option:
+        # since we are no longer creating the new transforms.conf stanza (variable config_entry) override it with the existing transform we will use
+        config_entry = transform_option
     # if we don't have an entry for this particular transform stanza name
     if not config_entry in transform_file_update_dict[filename]:
         transform_file_update_dict[filename][config_entry] = {}
@@ -638,7 +645,7 @@ for stanza in entries_not_found:
     transform_file_update_dict[filename][config_entry]['dest_key'] = dest_key
     transform_file_update_dict[filename][config_entry]['output_name'] = output_name
     transform_file_update_dict[filename][config_entry]['add_mode'] = add_mode
-    transform_file_update_dict[filename][config_entry]['remove_mode'] = remove_mode 
+    transform_file_update_dict[filename][config_entry]['remove_mode'] = remove_mode
     transform_file_update_dict[filename][config_entry]['transform_name'] = transform_option
 
 # for each props.conf file we need to work with
@@ -705,14 +712,12 @@ for filename in transform_file_update_dict:
             format_list = [ val.strip() for val in format.split(",") ]
             output_list = [ val.strip() for val in output_name.split(",") ]
             new_output_list = list(set(format_list+output_list))
-            new_output_list.sort()
             output_name = ", ".join(new_output_list)
         elif remove_mode and transforms_config.has_option(stanza, "FORMAT"):
             format = transforms_config.get(stanza, "FORMAT")
             format_list = [ val.strip() for val in format.split(",") ]
             output_list = [ val.strip() for val in output_name.split(",") ]
             new_output_list = list(set(format_list) - set(output_list))
-            new_output_list.sort()
             output_name = ", ".join(new_output_list)
 
         if args.mode == 'simulate':
@@ -766,11 +771,8 @@ for input_stanza in input_entries_not_found:
         if 'default_output' in data[data_entry]:
             output_name = output_name + ", " + data[data_entry]['default_output']
         else:
-            if 'add_mode' in data[data_entry]:
-                logger.warn("entry=%s is using TCP routing but not a default_output, please check that the default output already exists otherwise this will send traffic only to output=%s. Alternatively, use the default_output option" % (data_entry, output_name))
-            else:
-                logger.warn("entry=%s is using TCP routing but not a default_output, note this will override routing to only %s and therefore the default route will not get a copy" % (data_entry, output_name))
-                logger.warn("To prevent this situation add the default_output option into the json config file")
+            logger.warn("entry=%s is using TCP routing but not a default_output, note this will override routing to only %s and therefore the default route will not get a copy unless add_mode is specified in the config *and* the entry already has a routing entry..." % (data_entry, output_name))
+            logger.warn("To prevent this situation add the default_output option into the json config file")
 
     elif inputs_config.has_option(input_stanza, '_SYSLOG_ROUTING') and output_type == 'syslog':
         new_entry = False
@@ -782,13 +784,11 @@ for input_stanza in input_entries_not_found:
         output_entry_list = [ val.strip() for val in output_entry.split(",") ]
         output_list = [ val.strip() for val in output_name.split(",") ]
         new_output_list = list(set(output_entry_list+output_list))
-        new_output_list.sort()
         output_name = ", ".join(new_output_list)
     elif config != "nullQueue" and not new_entry and 'remove_mode' in data[data_entry]:
         output_entry_list = [ val.strip() for val in output_entry.split(",") ]
         output_list = [ val.strip() for val in output_name.split(",") ]
         new_output_list = list(set(output_entry_list) - set(output_list))
-        new_output_list.sort()
         output_name = ", ".join(new_output_list)
 
     if output_type == 'tcp':
