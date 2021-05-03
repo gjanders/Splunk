@@ -435,7 +435,10 @@ for stanza in entries_not_found:
         if index_name.find(",") == -1:
             config_entry = config_entry + "_" + index_name
         else:
-            config_entry = config_entry + "_" + index_name.replace(",","_")[:30]
+            name = ""
+            for idx in index_name.split(","):
+                name = name + idx[:4] + "_" + idx[:-4] + "_"
+            config_entry = config_entry + "_" + name
         default_option = "TRANSFORMS-route"
     else:
         if index_name.find(",") == -1:
