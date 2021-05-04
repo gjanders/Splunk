@@ -438,6 +438,8 @@ for stanza in entries_not_found:
             name = ""
             for idx in index_name.split(","):
                 name = name + idx[:4] + "_" + idx[:-4] + "_"
+            if len(name) > 200:
+                name = name[:100] + name[-100:]
             config_entry = config_entry + "_" + name
         default_option = "TRANSFORMS-route"
     else:
