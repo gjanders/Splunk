@@ -477,7 +477,6 @@ for stanza in entries_not_found:
                 # if we have a transform called route use that one
                 if option.find("TRANSFORMS-") == 0:
                     possible_options.append(option)
-
                     # In add_mode we may want to add one more entry into the FORMAT= of the transform
                     # if we have a transform that is updating the TCP or syslog routing...
                     # this makes things more complicated as we cannot just add a new transforms.conf stanza + update the existing props.conf file
@@ -512,7 +511,6 @@ for stanza in entries_not_found:
                 # preferred names are TRANSFORMS-route or TRANSFORMS-null if they exist
                 if (option.find("route") and data[stanza]['config'] == 'route') or (option.find("null") and data[stanza]['config'] == 'nullQueue'):
                     preferred_option = option
-
             if not transform_option and not remove_mode:
                 # If we didn't find one use the first transform as updating an existing TRANSFORM- is preferred over creating new ones
                 if not preferred_option:
@@ -520,9 +518,12 @@ for stanza in entries_not_found:
                 logger.debug("preferred_option=%s will be updated with the new routing option" % (preferred_option))
                 chosen_config = props_config.get(stanza_name, preferred_option)
 
-                # The chosen config will have one or more options, we just want to add one more...
-                new_config = chosen_config + ", " + config_entry
-
+                # The chosen config will have one or more options, we just want to add one more...if this is not already added by a previous iteration
+                if chosen_config.find(config_entry) == -1:
+                    new_config = chosen_config + ", " + config_entry
+                else:
+                    logger.info("stanza-name=%s, option=%s config_entry=%s was found in the chosen_config=%s" % (stanza_name, option, config_entry, chosen_config))
+                    new_config = chosen_config
                 # At this point we now that the required stanza is in a props.conf somewhere, but we cannot be sure which props.conf it is
                 # therefore we need to locate the individual file and parse only *it* so we can then output it with any required updates
                 filename = get_config_file(props_files, stanza_name, preferred_option)
@@ -579,7 +580,10 @@ for stanza in entries_not_found:
                 props_file_update_dict[filename][stanza_name][default_option]['default_option'] = True
             else:
                 # There is config getting updated so we just need to add our new entry to the end of the current config
+                #if props_file_update_dict[filename][stanza_name][default_option]['config'].find(config_entry) == -1:
                 props_file_update_dict[filename][stanza_name][default_option]['config'] = props_file_update_dict[filename][stanza_name][default_option]['config'] + ", " + config_entry
+                #else:
+                #     logger.warn("Config entry filename=%s stanza_name=%s default_option=%s config_entry=%s" % (filename, stanza_name, default_option, config_entry))
             logger.info("Adding file=%s to update list new_config=%s added to entry=%s within stanza=%s" % (filename, props_file_update_dict[filename][stanza_name][default_option]['config'], default_option, stanza_name))
     elif not remove_mode:
         # else we never had a props.conf entry found so we have to create one...
