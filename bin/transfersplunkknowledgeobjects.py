@@ -876,6 +876,8 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         del aMacro["sharing"]
         del aMacro["name"]
         del aMacro["owner"]
+        del aMacro["eai:appName"]
+        del aMacro["eai:userName"]        
         payload = aMacro
 
         if createOrUpdate == "create":
