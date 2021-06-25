@@ -171,12 +171,12 @@ def popLastResult(resultsDict, name):
 #   Due to variations in the REST API there are a few hacks inside this method to handle specific use cases, however the majority are straightforward
 #
 ###########################
-def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="", destOwner=False, noPrivate=False, noDisabled=False, override=None, includeEntities=None, excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None, disableAlertsOrReportsOnMigration=False, overrideAlways=None, actionResults=None):
+def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="", destOwner=False, noPrivate=False, noDisabled=False, override=None, includeEntities=None, excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None, disableAlertsOrReportsOnMigration=False, overrideAlways=None, actionResults=None, extra_args=""):
     #Keep a success/Failure list to be returned by this function
     #actionResults = {}
 
     #Use count=-1 to ensure we see all the objects
-    url = splunk_rest + "/servicesNS/-/" + app + endpoint + "?count=-1"
+    url = splunk_rest + "/servicesNS/-/" + app + endpoint + "?count=-1" + extra_args
     logger.debug("Running requests.get() on %s with username %s in app %s" % (url, srcUsername, app))
 
     #Verify=false is hardcoded to workaround local SSL issues
@@ -231,6 +231,10 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                     logger.debug("name %s, type %s in app %s was updated on %s" % (title, type, app, updated))
                 #Content apepars to be where 90% of the data we want is located
                 elif innerChild.tag.endswith("content"):
+
+                    # optimisation to deal with the giant display.visualizations... on savedsearches only
+                    skip_visualizations = True
+
                     for theAttribute in innerChild[0]:
                         #acl has the owner, sharing and app level which we required (sometimes there is eai:app but it's not 100% consistent so this is safer
                         #also have switched from author to owner as it's likely the safer option...
@@ -327,9 +331,17 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
 
                                 res = json.dumps(res)
                                 info[attribName] = res
+                            #Optimisation related to savedsearches if we're not a saved search using the visualisations tab, don't backup the display.visualizations...
+                            elif type=="savedsearches" and attribName == "display.general.type" and theAttribute.text=="visualizations":
+                                logger.debug("name=\"%s\" of type=%s found %s=%s in app context app=%s changing skip_visualizations to false" % (info["name"], type, attribName, theAttribute.text, app))
+                                info[attribName] = theAttribute.text
+                                skip_visualizations = False
                             #We keep the attributes that are not None
                             elif theAttribute.text:
-                                info[attribName] = theAttribute.text
+                                if skip_visualizations and attribName.find("display.visualizations.") == 0:
+                                    logger.debug("name=\"%s\" of type=%s found %s=%s in app context app=%s skipping as skip_visualizations is true" % (info["name"], type, attribName, theAttribute.text, app))
+                                else:
+                                    info[attribName] = theAttribute.text
                             #A hack related to automatic lookups, where a None / empty value must be sent through as "", otherwise requests will strip the entry from the
                             #post request. In the case of an automatic lookup we want to send through the empty value...
                             elif type=="automatic lookup" and theAttribute.text == None:
@@ -428,7 +440,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             origName = anInfo['origName']
             del anInfo['origName']
             encoded_name = six.moves.urllib.parse.quote(origName.encode('utf-8'))
-            encoded_name = encoded_name.replace("/", "%2F")            
+            encoded_name = encoded_name.replace("/", "%2F")
             origName = encoded_name
             logger.debug("%s of type %s overriding name from %s to %s due to origName existing in config dictionary" % (name, type, name, encoded_name))
             objURL = "%s/servicesNS/-/%s/%s/%s?output_mode=json" % (splunk_rest_dest, app, endpoint, encoded_name)
@@ -785,7 +797,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         url = "%s/servicesNS/%s/%s/properties/macros" % (splunk_rest_dest, owner, app)
 
         encoded_name = six.moves.urllib.parse.quote(name.encode('utf-8'))
-        encoded_name = encoded_name.replace("/", "%2F")        
+        encoded_name = encoded_name.replace("/", "%2F")
         objURL = "%s/servicesNS/-/%s/configs/conf-macros/%s?output_mode=json" % (splunk_rest_dest, app, encoded_name)
         #Verify=false is hardcoded to workaround local SSL issues
         res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)
@@ -877,7 +889,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         del aMacro["name"]
         del aMacro["owner"]
         del aMacro["eai:appName"]
-        del aMacro["eai:userName"]        
+        del aMacro["eai:userName"]
         payload = aMacro
 
         if createOrUpdate == "create":
@@ -964,7 +976,7 @@ def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntitie
     if ignoreVSID:
         ignoreList.append("vsid")
 
-    return runQueries(app, "/saved/searches", "savedsearches", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, disableAlertsOrReportsOnMigration=disableAlertsOrReportsOnMigration, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+    return runQueries(app, "/saved/searches", "savedsearches", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, disableAlertsOrReportsOnMigration=disableAlertsOrReportsOnMigration, override=override, overrideAlways=overrideAlways, actionResults=actionResults, extra_args="&listDefaultActionArgs=false")
 
 ###########################
 #
@@ -1077,6 +1089,9 @@ def panels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
 # lookups (definition/automatic)
 #
 ##########################
+#def lookupFiles(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
+#/data/lookup-table-files from lookup editor?
+
 def lookupDefinitions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
     ignoreList = [ "disabled", "eai:appName", "eai:userName", "CAN_OPTIMIZE", "CLEAN_KEYS", "DEPTH_LIMIT", "KEEP_EMPTY_VALS", "LOOKAHEAD", "MATCH_LIMIT", "MV_ADD", "SOURCE_KEY", "WRITE_META", "fields_array", "type" ]
     #If override we override the default nav menu of the destination app
