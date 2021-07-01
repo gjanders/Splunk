@@ -969,7 +969,7 @@ def dashboards(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, 
 #
 ###########################
 def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, ignoreVSID, disableAlertsOrReportsOnMigration, override, overrideAlways, actionResults):
-    ignoreList = [ "embed.enabled", "triggered_alert_count" ]
+    ignoreList = [ "embed.enabled", "triggered_alert_count", "next_scheduled_time", "qualifiedSearch" ]
 
     #View states gracefully fail in the GUI, via the REST API you cannot create the saved search if the view state does not exist
     #however the same saved search can work fine on an existing search head (even though the viewstate has been deleted)
