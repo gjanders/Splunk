@@ -25,8 +25,11 @@ dict = json.loads(res.text)
 print(f"status_code={res.status_code} on url={url}")
 
 roll_bucket_url = base_url + "/services/cluster/master/control/control/roll-hot-buckets"
+resync_bucket_url = base_url + "/services/cluster/master/control/control/resync_bucket_from_peer"
 
 current_time = round(time.time())
+
+resync_required = False
 
 for entry in dict['entry']:
     data_latest = entry['content']['latest']
@@ -37,14 +40,27 @@ for entry in dict['entry']:
         print(f"bucket={name} requires role due to {reason}")
         bucket_timestamp = data_initial['timestamp']
         diff = current_time - bucket_timestamp
-        print(diff)
-        if diff > wait_for_seconds:
+        if diff > wait_for_seconds*2:
+            resync_required = True
+        elif diff > wait_for_seconds:
             print(f'bucket={name} requires role due to {reason}, and is beyond {wait_for_seconds} seconds')
             data = { 'bucket_id': name }
             print(f'requests.post("{roll_bucket_url}", data={data}, verify=False)')
             res=requests.post(roll_bucket_url, auth=auth, data=data, verify=False)
-            print(res.status_code)
-            print(res.text)
             if res.status_code != requests.codes.ok:
                 print(f'bucket={name} code={res.status_code} text={res.text}')
+
+        # by this time we have tried to roll the buckets, so now a re-sync might be required instead
+        if diff > (wait_for_seconds*2):
+            url = base_url + "/services/cluster/master/buckets/" + name + "?output_mode=json"
+            res = requests.get(url,auth=auth,verify=False)
+            dict_buckets = json.loads(res.text)
+            print(f"status_code={res.status_code} on url={url}")
+            peer = list(dict_buckets['entry'][0]['content']['peers'].keys())[0]
+            data = { 'bucket_id': name, 'peer': peer }
+            print(f'requests.post("{resync_bucket_url}", data={data}, verify=False)')
+            res=requests.post(resync_bucket_url, auth=auth, data=data, verify=False)
+            if res.status_code != requests.codes.ok:
+                print(f'bucket={name} code={res.status_code} text={res.text}')
+            
     time.sleep(1)
