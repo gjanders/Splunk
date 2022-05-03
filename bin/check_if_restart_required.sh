@@ -38,6 +38,8 @@ done
 
 reload_conf=`grep "reload.*= simple" /opt/splunk/etc/system/default/app.conf | cut -d "." -f2 | awk '{ print $1".conf" }' | sort | uniq`
 # this works in my environment may require further testing...triggers with access_endpoints sometimes works but it depends what was in the config
+# for example reload.distsearch          = access_endpoints /search/distributed/bundle-replication-files
+# if the config file for distsearch contains [replicationBlacklist] then it won't require a restart, but if contains [replicationSettings] it may require a restart...
 reload_conf="${reload_conf} authentication.conf authorize.conf collections.conf indexes.conf messages.conf props.conf transforms.conf web.conf workload_pools.conf workload_rules.conf workload_policy.conf inputs.conf restmap.conf"
 
 restart_required_any="False"
