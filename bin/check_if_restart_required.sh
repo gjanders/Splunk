@@ -36,8 +36,9 @@ while getopts "d:" o; do
     esac
 done
 
-# unsure exactly what will and will not trigger reload, but server.conf will and includes http_post so removing that from the safe list
-reload_conf=`grep reload /opt/splunk/etc/system/default/app.conf | grep -v http_post  | cut -d "." -f2 | awk '{ print $1".conf" }' | sort | uniq`
+reload_conf=`grep "reload.*= simple" /opt/splunk/etc/system/default/app.conf | cut -d "." -f2 | awk '{ print $1".conf" }' | sort | uniq`
+# this works in my environment may require further testing...triggers with access_endpoints sometimes works but it depends what was in the config
+reload_conf="${reload_conf} authentication.conf authorize.conf collections.conf indexes.conf messages.conf props.conf transforms.conf web.conf workload_pools.conf workload_rules.conf workload_policy.conf inputs.conf restmap.conf"
 
 restart_required_any="False"
 
@@ -54,8 +55,8 @@ do
     combined="$default $local";
     #echo $app $combined
     # if the app has custom triggers for reload attempt to handle this scenario
-    custom_app_reload_default=`grep "^reload\." ${app}/default/app.conf 2>/dev/null| cut -d "." -f2 | awk '{ print $1".conf" }'`
-    custom_app_reload_local=`grep "^reload\." ${app}/local/app.conf 2>/dev/null| cut -d "." -f2 | awk '{ print $1".conf" }'`
+    custom_app_reload_default=`grep "^reload\..*= simple" ${app}/default/app.conf 2>/dev/null| cut -d "." -f2 | awk '{ print $1".conf" }'`
+    custom_app_reload_local=`grep "^reload\..*= simple" ${app}/local/app.conf 2>/dev/null| cut -d "." -f2 | awk '{ print $1".conf" }'`
     custom_app_reload="$custom_app_reload_default $custom_app_reload_local"
     for file in $combined;
     do
