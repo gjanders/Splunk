@@ -17,6 +17,11 @@ function usage {
     echo "./$(basename $0) -d --> directory to check if a restart is required (or comma separated string of directories)"
 }
 
+if [ $# -eq 0 ]; then
+  usage
+  exit 0
+fi
+
 while getopts "d:" o; do
     case "${o}" in
         d)
@@ -31,7 +36,8 @@ while getopts "d:" o; do
     esac
 done
 
-reload_conf=`grep reload /opt/splunk/etc/system/default/app.conf  | cut -d "." -f2 | awk '{ print $1".conf" }' | sort | uniq`
+# unsure exactly what will and will not trigger reload, but server.conf will and includes http_post so removing that from the safe list
+reload_conf=`grep reload /opt/splunk/etc/system/default/app.conf | grep -v http_post  | cut -d "." -f2 | awk '{ print $1".conf" }' | sort | uniq`
 
 restart_required_any="False"
 
