@@ -19,7 +19,7 @@ import re
     to advise of what would change. In update mode it actually updates the files...
     Note this script assumes it is running on Linux
 
-  Tested using splunk cmd python with version 2.7.16 / Splunk 8.0.0, older python versions may not have the configparser.ConfigParser...
+  Tested using python 3, older python versions may not have the configparser.ConfigParser...
   you can fix this by changing the ConfigParser line to:
   from ConfigParser import SafeConfigParser as ConfigParser
   And removing the strict= entries on each ConfigParser...
@@ -161,8 +161,8 @@ def update_config_file(filename, stanza, entry, updated_line, new_entry=False):
                logger.info("file=%s line=%s will have %s = %s added within stanza=%s" % (filename, line[:-1], entry, updated_line, cur_stanza))
                line = entry + " = " + updated_line + "\n" + line
                new_entry_written = True
-        # python 2, do not add extra newlines...
-        print line,
+        # do not add extra newlines...
+        print(line, end='')
     if new_entry and not new_entry_written:
         logger.info("Hit end of file but have not written this line, %s = %s, it will be written to file=%s at the end (in stanza=%s)" % (entry, updated_line, filename, stanza))
         with open(filename, 'a') as file:
@@ -185,7 +185,7 @@ def comment_config_file(filename, stanza, target_entry=False):
                 # or we are in the target stanz and we comment the block...
                 # python 2, do not add extra newlines...
                 line = "#" + line
-        print line,
+        print(line, end='')
 
 def create_indexes_regex(index):
     if index.find(",") != -1:
@@ -350,6 +350,7 @@ for stanza in data:
                 input_entries_not_found[stanza_in_config] = stanza
 
     if stanza_name in props_entries:
+        logger.debug("Found stanza_name=%s in props_entries" % (stanza_name))
         # we know that there is at least 1 TRANFORMS- entry within the required stanza
         transforms_name = props_entries[stanza_name]
 
@@ -369,7 +370,7 @@ for stanza in data:
                            logger.debug("SOURCE_KEY=%s" % (source_key))
                            if source_key == "_MetaData:Index":
                                if "REGEX" in the_transform:
-                                   regex = transforms_config.get(transform, "REGEX")
+                                   regex = transforms_config.get(transform, "REGEX").replace("(?i)","")
                                    logger.debug("REGEX=%s" % (regex))
                                    idx_regex = create_indexes_regex(data[stanza]['index_name'])
                                    expected_regex = "^(" + idx_regex + ")$"
@@ -382,6 +383,8 @@ for stanza in data:
                                            logger.info("For stanza=%s found transform=%s REGEX=%s SOURCE_KEY=%s, DEST_KEY=%s FORMAT=%s" % (stanza_name, transform, regex, source_key, dest_key, format))
                                        else:
                                            logger.debug("For stanza=%s found transform=%s REGEX=%s SOURCE_KEY=%s, DEST_KEY=%s FORMAT=%s" % (stanza_name, transform, regex, source_key, dest_key, format))
+                                   else:
+                                       logger.debug("For stanza=%s found transform=%s REGEX=%s SOURCE_KEY=%s, DEST_KEY=%s FORMAT=%s, expected_regex=%s, alt_regex=%s" % (stanza_name, transform, regex, source_key, dest_key, format, expected_regex, alt_regex))
         if found:
             logger.info("For stanza=%s found an entry performing the required routing" % (stanza_name))
             if remove_mode:
@@ -492,16 +495,17 @@ for stanza in entries_not_found:
                                 # if a transform has the required routing key, we use that one...
                                 if (dest_key == '_TCP_ROUTING' and output_type == "tcp") or\
                                    (dest_key == '_SYSLOG_ROUTING' and output_type == "syslog"):
+                                    regex=transforms_config.get(a_transform, 'REGEX').replace("(?i)","")
                                     if transforms_config.has_option(a_transform, 'SOURCE_KEY') and transforms_config.get(a_transform, 'SOURCE_KEY') == "_MetaData:Index" \
-                                    and (transforms_config.get(a_transform, 'REGEX') == expected_regex \
-                                    or transforms_config.get(a_transform, 'REGEX') == alt_regex):
+                                    and regex == expected_regex \
+                                    or regex == alt_regex:
                                         logger.info("transform=%s is routing to the expected type of data, and the regex matches the index in question..." % (a_transform))
                                         transform_option = a_transform
                                         break
                                     elif transforms_config.has_option(a_transform, 'SOURCE_KEY'):
                                         logger.debug("transforms.conf stanza=%s option=%s transforms.conf SOURCE_KEY=%s" % (a_transform, option, transforms_config.get(a_transform, 'SOURCE_KEY')))
                                         if transforms_config.has_option(a_transform, 'REGEX'):
-                                            logger.debug("transforms.conf stanza=%s REGEX=%s did not match regex=%s or regex=%s" % (a_transform, transforms_config.get(a_transform, 'REGEX'), expected_regex, alt_regex))
+                                            logger.debug("transforms.conf stanza=%s REGEX=%s did not match regex=%s or regex=%s" % (a_transform, regex, expected_regex, alt_regex))
 
                     if transform_option != False:
                         if remove_mode and len(transform_list) == 1:
