@@ -262,7 +262,7 @@ for sec in props_config.sections():
     options = props_config.options(sec)
     logger.debug("Options of section %s are %s" % (sec, options))
     for option in options:
-        if option.find("TRANSFORMS-") == 0:
+        if option.find("TRANSFORMS-") == 0 or option.find("RULESET-") == 0:
             value = props_config.get(sec, option)
             logger.debug("option=%s value=%s" % (option, value))
             if sec in props_entries:
@@ -478,7 +478,7 @@ for stanza in entries_not_found:
 
             for option in options:
                 # if we have a transform called route use that one
-                if option.find("TRANSFORMS-") == 0:
+                if option.find("TRANSFORMS-") == 0 or option.find("RULESET-") == 0:
                     possible_options.append(option)
                     # In add_mode we may want to add one more entry into the FORMAT= of the transform
                     # if we have a transform that is updating the TCP or syslog routing...
@@ -724,13 +724,13 @@ for filename in transform_file_update_dict:
             format = transforms_config.get(stanza, "FORMAT")
             format_list = [ val.strip() for val in format.split(",") ]
             output_list = [ val.strip() for val in output_name.split(",") ]
-            new_output_list = list(set(format_list+output_list))
+            new_output_list = sorted(set(format_list+output_list))
             output_name = ", ".join(new_output_list)
         elif remove_mode and transforms_config.has_option(stanza, "FORMAT"):
             format = transforms_config.get(stanza, "FORMAT")
             format_list = [ val.strip() for val in format.split(",") ]
             output_list = [ val.strip() for val in output_name.split(",") ]
-            new_output_list = list(set(format_list) - set(output_list))
+            new_output_list = sorted(set(format_list) - set(output_list))
             output_name = ", ".join(new_output_list)
 
         if args.mode == 'simulate':
@@ -796,12 +796,12 @@ for input_stanza in input_entries_not_found:
     if config != "nullQueue" and not new_entry and 'add_mode' in data[data_entry]:
         output_entry_list = [ val.strip() for val in output_entry.split(",") ]
         output_list = [ val.strip() for val in output_name.split(",") ]
-        new_output_list = list(set(output_entry_list+output_list))
+        new_output_list = sorted(set(output_entry_list+output_list))
         output_name = ", ".join(new_output_list)
     elif config != "nullQueue" and not new_entry and 'remove_mode' in data[data_entry]:
         output_entry_list = [ val.strip() for val in output_entry.split(",") ]
         output_list = [ val.strip() for val in output_name.split(",") ]
-        new_output_list = list(set(output_entry_list) - set(output_list))
+        new_output_list = sorted(set(output_entry_list) - set(output_list))
         output_name = ", ".join(new_output_list)
 
     if output_type == 'tcp':
