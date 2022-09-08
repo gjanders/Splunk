@@ -150,6 +150,10 @@ def parse_metadata_file(metadata_file, app, splunk_type, filter_type, filter_lis
                 logger.info(f"stanza={stanza_name} not found in filter list, skipping")
                 continue
 
+            # hack to change system to none / prevent global objects unless requested
+            if line.find("export = system") == 0:
+                line="export = none"
+
             string_res_list.append(line)
     return string_res_list
 
