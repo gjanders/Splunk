@@ -8,6 +8,7 @@ from configparser import RawConfigParser
 import csv
 import urllib.parse
 import sys
+import shutil
 
 ####################################################################################################
 #
@@ -81,9 +82,10 @@ def parse_single_conf_file(conf_file, app, splunk_type, filter_type, filter_list
         return string_res_list
 
     with open(conf_file, "r") as fp:
+        stanza_name = ""
         # read through each line of the file
         for line in fp:
-            logger.debug(f"Working with line={line}")
+            logger.debug(f"Working with line={line} file={conf_file}")
             # vsid's are legacy configuration related to viewstates, we don't need them
             if line.find("vsid") == 0:
                 logger.info(f"skipping vsid line, line={line}")
@@ -179,6 +181,8 @@ default_dir = f'{args.outputDir}/default'
 if not os.path.isdir(default_dir):
     os.mkdir(default_dir)
 
+lookups_dir = f'{args.outputDir}/lookups'
+
 ################
 #
 # Setup filtering
@@ -254,3 +258,69 @@ else:
         with open(f'{metadata_dir}/local.meta', 'w') as f:
             for line in string_res_list:
                 f.write(f"{line}")
+
+logger.info("Metadata extraction ends")
+
+################
+#
+# Copy other files (i.e. files that exist on the filesystem
+#
+################
+default_src_dir = f"{args.splunkhome}/etc/apps/{args.app}/default"
+local_src_dir = f"{args.splunkhome}/etc/apps/{args.app}/local"
+lookups_src_dir = f"{args.splunkhome}/etc/apps/{args.app}/lookups"
+
+def find_and_copy_files(dir, dest_dir, type, extension, filter_type, filter_list):
+    if os.path.isdir(dir):
+        files = os.listdir(dir)
+        for file_name in files:
+            lookup = f"{type}_{file_name[0:file_name.find(extension)]}"
+            if len(filter_list) > 0 and type in filter_type and not lookup in filter_list:
+                logger.info(f"dir={dir} file={file_name} lookup={lookup} did not match filter list, skipping")
+            else:
+                logger.debug(f"copying file dir={dir} file={file_name} lookup={lookup} to dest_dir={dest_dir}")
+                if not os.path.isdir(dest_dir):
+                    # create all required irectories
+                    os.makedirs(dest_dir, exist_ok=True)
+                if not os.path.isfile(f"{dir}/{file_name}"):
+                    logger.info(f"dir={dir} file={file_name} is not a file, skipping")
+                    continue
+                shutil.copy2(f"{dir}/{file_name}", dest_dir)
+
+for type in splunk_type:
+    if type == "datamodels":
+        datamodels_src = f"{default_src_dir}/data/models"
+        datamodels_dest = f"{default_dir}/data/models"
+        find_and_copy_files(datamodels_src, datamodels_dest, "datamodels", ".json", filter_type, filter_list)
+        datamodels_src = f"{local_src_dir}/data/models"
+        datamodels_dest = f"{local_dir}/data/models"
+        find_and_copy_files(datamodels_src, datamodels_dest, "datamodels", ".json", filter_type, filter_list)
+    elif type == "lookups":
+        find_and_copy_files(lookups_src_dir, lookups_dir, "lookups", ".csv", filter_type, filter_list)
+    elif type == "panels":
+        panels_src = f"{default_src_dir}/data/ui/panels"
+        panels_dst = f"{default_dir}/data/ui/panels"
+        find_and_copy_files(panels_src, panels_dst, "panels", ".xml", filter_type, filter_list)
+        panels_src = f"{local_src_dir}/data/ui/panels"
+        panels_dst = f"{local_dir}/data/ui/panels"
+        find_and_copy_files(panels_src, panels_dst, "panels", ".xml", filter_type, filter_list)
+    elif type=="views":
+        views_src = f"{default_src_dir}/data/ui/views"
+        views_dst = f"{default_dir}/data/ui/views"
+        find_and_copy_files(views_src, views_dst, "views", ".xml", filter_type, filter_list)
+        views_src = f"{local_src_dir}/data/ui/views"
+        views_dst = f"{local_dir}/data/ui/views"
+        find_and_copy_files(views_src, views_dst, "views", ".xml", filter_type, filter_list)
+    elif type=="nav":
+        default_nav = f"{default_src_dir}/data/ui/nav/default.xml"
+        if os.path.isfile(default_nav):
+            nav_dir = f"{default_dir}/data/ui/nav"
+            if not os.path.isdir(nav_dir):
+                os.makedirs(nav_dir, exist_ok=True)
+            shutil.copy2(default_nav, nav_dir)
+        local_nav = f"{local_src_dir}/data/ui/views/default.xml"
+        if os.path.isfile(local_nav):
+            nav_dir = f"{local_dir}/data/ui/nav"
+            if not os.path.isdir(nav_dir):
+                os.makedirs(nav_dir, exist_ok=True)
+            shutil.copy2(local_nav, nav_dir)
