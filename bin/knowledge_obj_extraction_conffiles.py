@@ -108,8 +108,8 @@ def parse_single_conf_file(conf_file, app, splunk_type, filter_type, filter_list
 # parse all conf files for an app
 def parse_conf_files(app_dir, splunk_type, app, filter_list, filter_type):
     # these types do not have .conf files as such
-    if splunk_type == "lookups" or splunk_type == "views":
-        logger.info("Skipping views/lookups in conf file reading, this is only required for metadata")
+    if splunk_type in ["lookups", "views", "appserver", "static"]:
+        logger.info("Skipping views/lookups/appserver/static in conf file reading, this is only required for metadata or file copying")
         return [], []
 
     # attempt to parse the default/<type>.conf files
@@ -160,7 +160,7 @@ def parse_metadata_file(metadata_file, app, splunk_type, filter_type, filter_lis
 
 # all is the alias for just about any configuration we want to retrieve from the metadata/config excluding viewstates
 if args.type=='all':
-    splunk_type = ['app','collections','commands','datamodels','eventtypes','lookups','macros','panels','props','savedsearches','tags','times','transforms','views','workflow_actions','nav']
+    splunk_type = ['app','collections','commands','datamodels','eventtypes','lookups','macros','panels','props','savedsearches','tags','times','transforms','views','workflow_actions','nav','appserver','static']
 else:
     splunk_type = [ args.type ]
 
@@ -354,6 +354,14 @@ for type in splunk_type:
         views_src = f"{local_src_dir}/data/ui/views"
         views_dst = f"{local_dir}/data/ui/views"
         find_and_copy_files(views_src, views_dst, "views", ".xml", filter_type, filter_list)
+    elif type=="static":
+        static_src = f"{args.splunkhome}/etc/apps/{args.app}/static"
+        static_dst = f"{args.outputDir}/apps/static"
+        find_and_copy_files(static_src, static_dst, "static", ".png", filter_type, filter_list)
+    elif type=="appserver":
+        appserver_src = f"{args.splunkhome}/etc/apps/{args.app}/appserver"
+        appserver_dst = f"{args.outputDir}/apps/appserver"
+        shutil.copytree(appserver_src, appserver_dst)
     elif type=="nav":
         default_nav = f"{default_src_dir}/data/ui/nav/default.xml"
         if os.path.isfile(default_nav):
