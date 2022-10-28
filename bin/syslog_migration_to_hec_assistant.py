@@ -153,7 +153,7 @@ def parse_single_conf_file(conf_file, all_syslog_config):
         persist-name("{destination_name}")
         disk-buffer(
             mem-buf-size(52428800)
-            reliable(yes)
+            reliable(no)
             disk-buf-size(73400320)
             dir("/var/log/syslog/buffers/{destination_name}")
         )
