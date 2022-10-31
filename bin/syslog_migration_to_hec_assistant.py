@@ -124,6 +124,11 @@ def parse_single_conf_file(conf_file, all_syslog_config):
                 if current_stanza != "":
                     for key in all_syslog_config.keys():
                         syslog_file_name, template = all_syslog_config[key]
+                        # we sometimes use /.../ at the end of the line
+                        if file_name.find("/.../") != -1:
+                            logger.debug(f"before file_name={file_name}")
+                            file_name = file_name[0:-5]
+                            logger.debug(f"after file_name={file_name}")                        
                         if syslog_file_name.find(file_name) != -1:
                             #print(f"potential match with stanza_name={stanza_name} key={key} syslog_file_name={syslog_file_name} template={template}")
                             if host_segment != "":
@@ -136,6 +141,8 @@ def parse_single_conf_file(conf_file, all_syslog_config):
                                 logger.debug(f"tcp_routing={tcp_routing}")
                             if index == "" or sourcetype == "":
                                 logger.debug("index or sourcetype not set?")
+                            if host_variable != "HOST":
+                                template = template + "_" + host_variable                                
                             destination_name = syslog_file_name[16:syslog_file_name.find("/",17)]
                             source_name = syslog_file_name[0:syslog_file_name.find("/",17)]
                             new_dest = f"""destination d_hec_{destination_name} {{
@@ -161,7 +168,8 @@ def parse_single_conf_file(conf_file, all_syslog_config):
         tls(
             peer-verify(no)
         )
-        body('{{ "event": "$(template {template})", "source": "{source_name}", "time": "${{R_UNIXTIME}}", "host": "${{{host_variable}}}" }}')
+        #body('{{ "event": "$(template {template})", "source": "{source_name}", "time": "${{R_UNIXTIME}}", "host": "${{{host_variable}}}" }}')
+        body('$(template {template})')        
     );
 }};
 """ 
@@ -171,7 +179,7 @@ def parse_single_conf_file(conf_file, all_syslog_config):
 [http://syslog-{file_short_name}]
 description=HEC token for {file_short_name}
 token = d_hec_{destination_name} 
-index = {index}indexes = {index}sourcetype = {sourcetype.strip()}""")
+index = {index}indexes = {index}source = {source_name}\nsourcetype = {sourcetype.strip()}""")
 
                             if tcp_routing != "":
                                 print(f"outputgroup={tcp_routing}")
