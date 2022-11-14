@@ -48,6 +48,29 @@ echo "${date} restart script begins"
 
 echo "dir is $dir"
 
+dist_search_ignore="True"
+files=`ls ${app}/default/distsearch.conf ${app}/local/distsearch.conf`
+if [ "x$files" != "x" ]; then
+    for file in `echo $files`; do
+        count=`grep "^\[" ${file} 2>/dev/null | grep -v "\[replication[ABDW]" | wc -l`
+        if [ "$count" -ne 0 ]; then
+            dist_search_ignore="False"
+        fi
+    done
+fi
+
+server_conf_ignore="True"
+files=`ls ${app}/default/server.conf ${app}/local/server.conf`
+if [ "x$files" != "x" ]; then
+    for file in `echo $files`;
+        do
+        count=`grep "^\[" ${file} 2>/dev/null | grep -v "\[replication[ABDW]" | grep -v "^\[shclustering\]" | wc -l`
+        if [ "$count" -ne 0 ]; then
+            server_conf_ignore="False"
+        fi
+fi
+
+
 # if any of these files cannot be reloaded a restart is required
 for app in ${dir};
 do
@@ -60,6 +83,14 @@ do
     custom_app_reload_default=`grep "^reload\..*= simple" ${app}/default/app.conf 2>/dev/null| cut -d "." -f2 | awk '{ print $1".conf" }'`
     custom_app_reload_local=`grep "^reload\..*= simple" ${app}/local/app.conf 2>/dev/null| cut -d "." -f2 | awk '{ print $1".conf" }'`
     custom_app_reload="$custom_app_reload_default $custom_app_reload_local"
+    
+    if [ "$server_conf_ignore" = "True" ]; then
+        custom_app_reload="$custom_app_reload server.conf"
+    fi
+    if [ "$dist_search_ignore" = "True" ]; then
+        custom_app_reload="$custom_app_reload distsearch.conf"
+    fi
+    
     for file in $combined;
     do
         if exists_in_list "$reload_conf" "$file"; then
