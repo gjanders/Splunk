@@ -64,7 +64,7 @@ files=`ls ${app}/default/server.conf ${app}/local/server.conf`
 if [ "x$files" != "x" ]; then
     for file in `echo $files`;
         do
-        count=`grep "^\[" ${file} 2>/dev/null | grep -v "\[replication[ABDW]" | grep -v "^\[shclustering\]" | wc -l`
+        count=`grep -vE "(#|\[)" ${file} 2>/dev/null | grep -v "conf_replication_" | wc -l`
         if [ "$count" -ne 0 ]; then
             server_conf_ignore="False"
         fi
