@@ -132,7 +132,9 @@ def parse_metadata_file(metadata_file, app, splunk_type, filter_type, filter_lis
     with open(metadata_file, "r") as fp:
         for line in fp:
             logger.debug(f"Working with line={line}")
-            if len(line) > 0 and line[0] == "[":
+            if len(line.strip()) == 0 or line.find("#") == 0:
+                continue            
+            elif len(line) > 0 and line[0] == "[":
                 stanza_name = line[1:len(line)-2]
                 logger.debug(f"working with stanza={stanza_name}")
 
