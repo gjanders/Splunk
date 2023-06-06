@@ -313,6 +313,7 @@ for stanza in data:
     else:
         remove_mode = False
 
+    input_exists = False
     # if we see an inputs.conf entry that matches the sourcetype in question...
     if stanza_name in inputs_sourcetype_dict:
         stanza_list_in_config = inputs_sourcetype_dict[stanza_name]
@@ -327,6 +328,8 @@ for stanza in data:
             if not index_name == index_in_config:
                 logger.debug("index=%s on stanza=%s does not match config option of index=%s" % (index_name, stanza_in_config, index_in_config))
                 continue
+
+            input_exists = True
 
             output_name = data[stanza]['output_name']
             if stanza_in_config.find("http://") != -1:
@@ -356,7 +359,10 @@ for stanza in data:
                 input_entries_not_found[stanza_in_config] = stanza
 
     if stanza_name in props_entries:
-        logger.debug("Found stanza_name=%s in props_entries" % (stanza_name))      
+        logger.debug("Found stanza_name=%s in props_entries" % (stanza_name))
+        if input_exists == True:
+            logger.info("stanza_name=%s in props_entries was found in inputs.conf, skipping props.conf changes" % (stanza_name))
+            continue
         # we know that there is at least 1 TRANFORMS- entry within the required stanza
         transforms_name = props_entries[stanza_name]
 
