@@ -19,7 +19,7 @@ import re
     to advise of what would change. In update mode it actually updates the files...
     Note this script assumes it is running on Linux
 
-  Tested using python 3, older python versions may not have the configparser.ConfigParser...
+  Tested using splunk cmd python with version 2.7.16 / Splunk 8.0.0, older python versions may not have the configparser.ConfigParser...
   you can fix this by changing the ConfigParser line to:
   from ConfigParser import SafeConfigParser as ConfigParser
   And removing the strict= entries on each ConfigParser...
@@ -96,7 +96,7 @@ Also note that if add_mode exists then the new setting will be appended to the e
 Otherwise _TCP_ROUTING=example2 (or default,example2 if output_default was set to default)
 remove_mode is the opposite of add mode, it removes the _TCP_ROUTING setting if it exists or removes the required entry from _TCP_ROUTING
 """)
-parser.add_argument('-location', help='[dir] The directory where the props/transforms/inputs are located, props/transforms/inputs will be found recursively', required=True)
+parser.add_argument('-location', help='[dir] The directory where the props/transforms/inputs are located, props/transforms/inputs will be found recursively. Note that you can comma separate to allow multiple directories to be checked', required=True)
 parser.add_argument('-mode', help='Should this check for the expected config, show what would get updated or update props/transforms/inputs', required=True, choices=['check','simulate','update'])
 parser.add_argument('-configfile', help='[file] JSON-based config file used to determine what to check/configure', required=True)
 parser.add_argument('-configdir', help='[dir] If there is no current props.conf, transforms.conf files in which directory should it be created (this dir must exist)', required=False)
@@ -161,7 +161,6 @@ def update_config_file(filename, stanza, entry, updated_line, new_entry=False):
                logger.info("file=%s line=%s will have %s = %s added within stanza=%s" % (filename, line[:-1], entry, updated_line, cur_stanza))
                line = entry + " = " + updated_line + "\n" + line
                new_entry_written = True
-        # do not add extra newlines...
         print(line, end='')
     if new_entry and not new_entry_written:
         logger.info("Hit end of file but have not written this line, %s = %s, it will be written to file=%s at the end (in stanza=%s)" % (entry, updated_line, filename, stanza))
@@ -233,20 +232,23 @@ transforms_files = []
 inputs_files = []
 
 # Walk the filesystem location and find the props.conf, transforms.conf and inputs.conf files
-logger.debug("Walking directory %s" % (args.location))
-for root, dirnames, filenames in os.walk(args.location):
-    for filename in fnmatch.filter(filenames, 'props.conf'):
-        file = os.path.join(root, filename)
-        props_files.append(file)
-        logger.debug("Found props file=" + file)
-    for filename in fnmatch.filter(filenames, 'transforms.conf'):
-        file = os.path.join(root, filename)
-        transforms_files.append(file)
-        logger.debug("Found transforms file=" + file)
-    for filename in fnmatch.filter(filenames, 'inputs.conf'):
-        file = os.path.join(root, filename)
-        inputs_files.append(file)
-        logger.debug("Found inputs file=" + file)
+locations = args.location.split(',')
+logger.debug("Walking directory %s" % (locations))
+for a_location in locations:
+    for root, dirnames, filenames in os.walk(a_location):
+        logger.debug(f'a_location={a_location} root={root} dirnames={dirnames} filenames={filenames}')
+        for filename in fnmatch.filter(filenames, 'props.conf'):
+            file = os.path.join(root, filename)
+            props_files.append(file)
+            logger.info("Found props file=" + file)
+        for filename in fnmatch.filter(filenames, 'transforms.conf'):
+            file = os.path.join(root, filename)
+            transforms_files.append(file)
+            logger.info("Found transforms file=" + file)
+        for filename in fnmatch.filter(filenames, 'inputs.conf'):
+            file = os.path.join(root, filename)
+            inputs_files.append(file)
+            logger.info("Found inputs file=" + file)
 
 # parse all props.conf files
 props_config = ConfigParser(allow_no_value=True, strict=False)
@@ -327,13 +329,17 @@ for stanza in data:
                 continue
 
             output_name = data[stanza]['output_name']
-            if inputs_config.has_option(stanza_in_config, '_TCP_ROUTING'):
-                #We have a _TCP_ROUTING entry, does it match what we want?
-                tcp_routing_settings = inputs_config.get(stanza_in_config, '_TCP_ROUTING')
+            if stanza_in_config.find("http://") != -1:
+                routing_key = 'outputgroup'
+            else:
+                routing_key = '_TCP_ROUTING'
+            if inputs_config.has_option(stanza_in_config, routing_key):
+                #We have a _TCP_ROUTING or outputgroup entry, does it match what we want?
+                tcp_routing_settings = inputs_config.get(stanza_in_config, routing_key)
                 tcp_routing_settings_list = [ val.strip() for val in tcp_routing_settings.split(",") ]
                 logger.debug("tcp_routing_settings_list=%s for inputs.conf stanza=%s" % (tcp_routing_settings_list, stanza_in_config))
                 if output_name in tcp_routing_settings_list and 'output_type' in data[stanza] and data[stanza]['output_type'] == "TCP":
-                    logger.info("Found stanza=%s index=%s inputs.conf stanza=%s _TCP_ROUTING=%s as expected" % (stanza, index_name, stanza_in_config, tcp_routing_settings_list))
+                    logger.info("Found stanza=%s index=%s inputs.conf stanza=%s %s=%s as expected" % (stanza, index_name, stanza_in_config, routing_key, tcp_routing_settings_list))
                     found_input = True
             elif inputs_config.has_option(stanza_in_config, '_SYSLOG_ROUTING'):
                 syslog_routing_settings = inputs_config.get(stanza_in_config, '_SYSLOG_ROUTING')
@@ -350,7 +356,7 @@ for stanza in data:
                 input_entries_not_found[stanza_in_config] = stanza
 
     if stanza_name in props_entries:
-        logger.debug("Found stanza_name=%s in props_entries" % (stanza_name))
+        logger.debug("Found stanza_name=%s in props_entries" % (stanza_name))      
         # we know that there is at least 1 TRANFORMS- entry within the required stanza
         transforms_name = props_entries[stanza_name]
 
@@ -383,23 +389,21 @@ for stanza in data:
                                            logger.info("For stanza=%s found transform=%s REGEX=%s SOURCE_KEY=%s, DEST_KEY=%s FORMAT=%s" % (stanza_name, transform, regex, source_key, dest_key, format))
                                        else:
                                            logger.debug("For stanza=%s found transform=%s REGEX=%s SOURCE_KEY=%s, DEST_KEY=%s FORMAT=%s" % (stanza_name, transform, regex, source_key, dest_key, format))
-                                   else:
-                                       logger.debug("For stanza=%s found transform=%s REGEX=%s SOURCE_KEY=%s, DEST_KEY=%s FORMAT=%s, expected_regex=%s, alt_regex=%s" % (stanza_name, transform, regex, source_key, dest_key, format, expected_regex, alt_regex))
         if found:
             logger.info("For stanza=%s found an entry performing the required routing" % (stanza_name))
             if remove_mode:
                 logger.info("stanza=%s will be added to remove list" % (stanza_name))
                 entries_not_found.append(stanza)
         else:
-            logger.info("For stanza=%s, did not find an entry in props/transforms location=%s to perform the required routing for config stanza=%s" % (stanza_name, args.location, stanza))
+            logger.info("For stanza=%s, did not find an entry in props/transforms location=%s to perform the required routing for config stanza=%s" % (stanza_name, locations, stanza))
             entries_not_found.append(stanza)
     else:
-        logger.info("No props.conf stanza containing a TRANSFORMS- entry was found for stanza=%s in location=%s for config entry=%s" % (stanza_name, args.location, stanza))
+        logger.info("No props.conf stanza containing a TRANSFORMS- entry was found for stanza=%s in location=%s for config entry=%s" % (stanza_name, locations, stanza))
         if not remove_mode:
             entries_not_found.append(stanza)
 
 logger.info("The following props.conf stanzas did not have transforms.conf stanzas matching the required index_name: %s" % (entries_not_found))
-logger.info("The following inputs.conf stanzas did not have the required _TCP_ROUTING or _SYSLOG_ROUTING that was requested: %s" % (input_entries_not_found))
+logger.info("The following inputs.conf stanzas did not have the required _TCP_ROUTING or _SYSLOG_ROUTING or outputgroup that was requested: %s" % (input_entries_not_found))
 
 # At this point we know what does/does not exist, was this check mode?
 if args.mode=='check':
@@ -495,17 +499,16 @@ for stanza in entries_not_found:
                                 # if a transform has the required routing key, we use that one...
                                 if (dest_key == '_TCP_ROUTING' and output_type == "tcp") or\
                                    (dest_key == '_SYSLOG_ROUTING' and output_type == "syslog"):
-                                    regex=transforms_config.get(a_transform, 'REGEX').replace("(?i)","")
                                     if transforms_config.has_option(a_transform, 'SOURCE_KEY') and transforms_config.get(a_transform, 'SOURCE_KEY') == "_MetaData:Index" \
-                                    and regex == expected_regex \
-                                    or regex == alt_regex:
+                                    and (transforms_config.get(a_transform, 'REGEX') == expected_regex \
+                                    or transforms_config.get(a_transform, 'REGEX') == alt_regex):
                                         logger.info("transform=%s is routing to the expected type of data, and the regex matches the index in question..." % (a_transform))
                                         transform_option = a_transform
                                         break
                                     elif transforms_config.has_option(a_transform, 'SOURCE_KEY'):
                                         logger.debug("transforms.conf stanza=%s option=%s transforms.conf SOURCE_KEY=%s" % (a_transform, option, transforms_config.get(a_transform, 'SOURCE_KEY')))
                                         if transforms_config.has_option(a_transform, 'REGEX'):
-                                            logger.debug("transforms.conf stanza=%s REGEX=%s did not match regex=%s or regex=%s" % (a_transform, regex, expected_regex, alt_regex))
+                                            logger.debug("transforms.conf stanza=%s REGEX=%s did not match regex=%s or regex=%s" % (a_transform, transforms_config.get(a_transform, 'REGEX'), expected_regex, alt_regex))
 
                     if transform_option != False:
                         if remove_mode and len(transform_list) == 1:
@@ -774,12 +777,16 @@ for input_stanza in input_entries_not_found:
         output_type = data[data_entry]['output_type'].lower()
 
     new_entry = True
+    if input_stanza.find("http://") != -1:
+        routing_key = 'outputgroup'
+    else:
+        routing_key = '_TCP_ROUTING'
     if config == "nullQueue":
         # if we attempt to nullQueue an inputs.conf entry we actually want to comment out the said entry
         logger.info("filename=%s stanza=%s requires commenting out / removal" % (filename, input_stanza))
-    elif inputs_config.has_option(input_stanza, '_TCP_ROUTING') and output_type == 'tcp':
+    elif inputs_config.has_option(input_stanza, routing_key) and output_type == 'tcp':
         new_entry = False
-        output_entry = inputs_config.get(input_stanza, '_TCP_ROUTING')
+        output_entry = inputs_config.get(input_stanza, routing_key)
 
         if 'default_output' in data[data_entry]:
             output_name = output_name + ", " + data[data_entry]['default_output']
@@ -805,7 +812,7 @@ for input_stanza in input_entries_not_found:
         output_name = ", ".join(new_output_list)
 
     if output_type == 'tcp':
-        key = "_TCP_ROUTING"
+        key = routing_key
     elif output_type == 'syslog':
         key = "_SYSLOG_ROUTING"
         if not new_entry:
