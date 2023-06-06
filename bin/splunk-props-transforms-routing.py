@@ -314,6 +314,7 @@ for stanza in data:
         remove_mode = False
 
     input_exists = False
+
     # if we see an inputs.conf entry that matches the sourcetype in question...
     if stanza_name in inputs_sourcetype_dict:
         stanza_list_in_config = inputs_sourcetype_dict[stanza_name]
@@ -330,7 +331,7 @@ for stanza in data:
                 continue
 
             input_exists = True
-
+            logger.error("index=%s on stanza=%s does not match config option of index=%s" % (index_name, stanza_in_config, index_in_config))
             output_name = data[stanza]['output_name']
             if stanza_in_config.find("http://") != -1:
                 routing_key = 'outputgroup'
@@ -358,11 +359,8 @@ for stanza in data:
                 logger.info("Found entry for stanza=%s index=%s in inputs.conf routing to output=%s adding inputs.conf stanza=%s to the list to remove entry" % (stanza, index_name, output_name, stanza_in_config))
                 input_entries_not_found[stanza_in_config] = stanza
 
-    if stanza_name in props_entries:
+    if stanza_name in props_entries and not input_exists == True:
         logger.debug("Found stanza_name=%s in props_entries" % (stanza_name))
-        if input_exists == True:
-            logger.info("stanza_name=%s in props_entries was found in inputs.conf, skipping props.conf changes" % (stanza_name))
-            continue
         # we know that there is at least 1 TRANFORMS- entry within the required stanza
         transforms_name = props_entries[stanza_name]
 
@@ -403,7 +401,7 @@ for stanza in data:
         else:
             logger.info("For stanza=%s, did not find an entry in props/transforms location=%s to perform the required routing for config stanza=%s" % (stanza_name, locations, stanza))
             entries_not_found.append(stanza)
-    else:
+    elif not input_exists == True:
         logger.info("No props.conf stanza containing a TRANSFORMS- entry was found for stanza=%s in location=%s for config entry=%s" % (stanza_name, locations, stanza))
         if not remove_mode:
             entries_not_found.append(stanza)
