@@ -713,7 +713,7 @@ for filename in transform_file_update_dict:
     for stanza in transform_file_update_dict[filename]:
         # the transform stanzas can appear under multiple props.conf (and therefore transforms.conf file)
         # however we only need 1 of them written to the config
-        if stanza in transform_stanzas:
+        if stanza in transform_stanzas or stanza in transforms_config.sections():
             logger.info("stanza=%s has being written to a file, not writing it in file=%s" % (stanza, filename))
             continue
         transform_stanzas.append(stanza)
