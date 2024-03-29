@@ -80,19 +80,19 @@ Provides the full list, a summary of the main options are below
 ## Examples
 This was provided by J.R. Murray in relation to this script. Pull requests or email contributions welcome:
 
-`| rest splunk_server=local services/apps/local 
- | search disabled=0 label="*" NOT title IN(splunkclouduf) 
- | dedup title 
- | fields title 
- | rename title AS app 
- | map search="| rest splunk_server=local /servicesNS/-/$app$/directory count=0 search=$app$ " maxsearches=200 
+`| rest splunk_server=local /services/apps/local
+ | search disabled=0 label="*" NOT title IN(splunkclouduf)
+ | dedup title
+ | fields title
+ | rename title AS app
+ | map search="| rest splunk_server=local /servicesNS/-/$app$/directory count=0 search=$app$ " maxsearches=200
  | rename eai:acl.* AS *, eai:type AS type 
- | search (removable=1 OR NOT owner IN(nobody, splunk-system-user, admin) OR (updated=2023* OR updated=2024* NOT eai:acl.removable=1)) NOT disabled IN(true, 1) NOT app=missioncontrol 
- | eval title="\"".title."\"" 
- | stats values(title) AS title by app type 
+ | search (removable=1 OR NOT owner IN (nobody, splunk-system-user, admin) OR (updated=2023* OR updated=2024* NOT eai:acl.removable=1)) NOT disabled IN (true, 1) NOT app=missioncontrol
+ | eval title="\"".title."\""
+ | stats values(title) AS title by app type
  | eval title=mvjoin(title, ",")
- | eval script_type=case( type=="savedsearch", "savedsearches", type=="props-lookup", "automaticLookup", type=="transforms-lookup", "lookupDefinition", type=="fvtags", "tags", type=="props-extract", "fieldExtraction", type=="fieldaliases", "fieldAlias", type=="views", "dashboards", type=="collections-conf", "collections", true(), type) 
- | fillnull value="" 
+ | eval script_type=case( type=="savedsearch", "savedsearches", type=="props-lookup", "automaticLookup", type=="transforms-lookup", "lookupDefinition", type=="fvtags", "tags", type=="props-extract", "fieldExtraction", type=="fieldaliases", "fieldAlias", type=="views", "dashboards", type=="collections-conf", "collections", true(), type)
+ | fillnull value=""
  | eval command=" -".script_type." -srcApp ".app." -includeEntities ".title | table command
 `
 
