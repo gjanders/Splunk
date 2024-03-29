@@ -22,6 +22,8 @@ import re
 #       This script re-owns a knowledge object to the owner on the original system unless the -destOwner parameter is specified, note that permissions per-knowledge object *are not*
 #       applied and therefore each knowledge object inherits the permissions of the parent application
 #
+#   The README.md for this file exists on https://github.com/gjanders/Splunk (including examples of usage)
+#
 ###########################
 
 #Setup the logging, the plan was to default to INFO and change to DEBUG level but it's currently the

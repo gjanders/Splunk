@@ -4,7 +4,7 @@ Other Splunk scripts which do not fit into the SplunkAdmins application
 Limited documentation is available for the transfer splunk knowledge objects script below
 
 ## Purpose?
-Transfer Splunk knowledge objects from 1 search head to another without going through the deployer (except for lookup files, they cannot be created via REST API as such) 
+Transfer Splunk knowledge objects from 1 search head to another without going through the deployer (except for lookup files, they cannot be created via REST API as such, however refer to https://github.com/beckyburwell/splunk_rest_upload_lookups for an example of using the lookup editor REST endpoints) 
 
 ## How?
 A custom written python script that can be run via: 
@@ -76,3 +76,23 @@ Provides the full list, a summary of the main options are below
 ### Other ###
 ```-ignoreViewstatesAttribute``` (optional) when creating saved searches strip the vsid parameter/attribute before attempting to create the saved search  
 ```-disableAlertsOrReportsOnMigration``` (optional) when creating alerts/reports, set disabled=1 (or enableSched=0) irrelevant of the previous setting pre-migration
+
+## Examples
+This was provided by J.R. Murray in relation to this script. Pull requests or email contributions welcome:
+
+`| rest splunk_server=local services/apps/local 
+ | search disabled=0 label="*" NOT title IN(splunkclouduf) 
+ | dedup title 
+ | fields title 
+ | rename title AS app 
+ | map search="| rest splunk_server=local /servicesNS/-/$app$/directory count=0 search=$app$ " maxsearches=200 
+ | rename eai:acl.* AS *, eai:type AS type 
+ | search (removable=1 OR NOT owner IN(nobody, splunk-system-user, admin) OR (updated=2023* OR updated=2024* NOT eai:acl.removable=1)) NOT disabled IN(true, 1) NOT app=missioncontrol 
+ | eval title="\"".title."\"" 
+ | stats values(title) AS title by app type 
+ | eval title=mvjoin(title, ",")
+ | eval script_type=case( type=="savedsearch", "savedsearches", type=="props-lookup", "automaticLookup", type=="transforms-lookup", "lookupDefinition", type=="fvtags", "tags", type=="props-extract", "fieldExtraction", type=="fieldaliases", "fieldAlias", type=="views", "dashboards", type=="collections-conf", "collections", true(), type) 
+ | fillnull value="" 
+ | eval command=" -".script_type." -srcApp ".app." -includeEntities ".title | table command
+`
+
