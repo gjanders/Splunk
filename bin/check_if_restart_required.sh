@@ -52,8 +52,19 @@ dist_search_ignore="True"
 files=`ls ${app}/default/distsearch.conf ${app}/local/distsearch.conf`
 if [ "x$files" != "x" ]; then
     for file in `echo $files`; do
-        count=`grep "^\[" ${file} 2>/dev/null | grep -v "\[replication[ABDW]" | wc -l`
-        if [ "$count" -ne 0 ]; then
+        # strip any blocks of text under the stanzas of
+        # replicationWhitelist, replicationSettings:refineConf, replicationAllowlist, replicationBlacklist, replicationDenylist
+        # this type of distsearch.conf should not trigger a restart
+        # the grep removes the comments and counts non-empty lines
+        awk '
+         BEGIN {skip=0}
+         /^\[(replicationWhitelist|replicationSettings:refineConf|replicationAllowlist|replicationBlacklist|replicationDenylist)\]/ {skip=1}
+         /^\[/ && !/^\[(replicationWhitelist|replicationSettings:refineConf|replicationAllowlist|replicationBlacklist|replicationDenylist)\]/ { skip=0 }
+         { if (skip==0) print $0 }
+        ' $file | grep -v "#" | grep -vc '^$'
+
+        exit_code=$?
+        if [ ${exit_code} -eq 0 ]; then
             dist_search_ignore="False"
         fi
     done
