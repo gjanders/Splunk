@@ -1,0 +1,12 @@
+[Unit]
+Description=Offline Splunk indexers pre-shutdown of OS
+After=Splunkd.service
+
+[Service]
+Type=oneshot
+ExecStop=/opt/splunk/scripts/splunk_offline.sh
+TimeoutStopSec=600
+RemainAfterExit=yes
+
+[Install]
+WantedBy=shutdown.target reboot.target halt.target multi-user.target Splunkd.service
