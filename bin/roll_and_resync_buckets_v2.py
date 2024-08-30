@@ -63,4 +63,4 @@ for entry in dict['entry']:
             if res.status_code != requests.codes.ok:
                 print(f'bucket={name} code={res.status_code} text={res.text}')
             
-    time.sleep(1)
+        time.sleep(1)
