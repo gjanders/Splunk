@@ -1,163 +1,623 @@
+#!/usr/bin/env python
+
+"""
+transfersplunkknowledgeobjects.py
+
+Script to transfer Splunk knowledge objects between instances via REST API queries.
+Preserves ownership, sharing, and ACLs, and supports various migration filters.
+
+Run this script via splunk cmd python transfersplunkknowledgeobjects.py.
+
+For help information, use the -h flag:  splunk cmd python transfersplunkknowledgeobjects.py -h
+
+Features: 
+    - Transfers knowledge objects between Splunk instances via REST API
+    - Preserves object ownership and sharing permissions (ACL) unless the -destOwner parameter is specified
+    - Automatically creates missing users and applications on destination
+    - Supports token-based and password-based authentication
+    - Provides comprehensive filtering options for selective migration
+    - Includes retry logic with exponential backoff to handle Splunk Cloud API rate limits and network issues
+
+Limitations:
+    - Lookup files must exist on the destination before migrating lookup definitions
+    - Some object types may have REST API specific constraints (e.g., collections require 'nobody' ownership)
+    - Network connectivity and authentication must be maintained throughout the transfer process
+
+"""
+
 import requests
 import xml.etree.ElementTree as ET
 import logging
 from logging.config import dictConfig
-import six.moves.urllib.request, six.moves.urllib.parse, six.moves.urllib.error
+import urllib.parse
 import argparse
 import json
 import copy
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
 import re
+import time
+import random
+import string
+from requests.exceptions import ConnectionError, Timeout
 
-###########################
-#
-# transfersplunknowledgeobjects
-#   Run this script via splunk cmd python transfersplunknowledgeobjects.py for help information use the -h flag:
-#   splunk cmd python transfersplunknowledgeobjects.py -h
-#   This script aims to transfer Splunk knowledge objects from 1 instance via REST API queries to another instance via REST API POST's
-#   this method allows avoiding the deployer in all cases except for lookups, lookups can be pushed from a deployer and then removed from the deployer
-#   before attempting to migrate lookup definitions, this will ensure that the lookup files actually exist when the definitions are created
-#
-#   Limitations
-#       This script re-owns a knowledge object to the owner on the original system unless the -destOwner parameter is specified, note that permissions per-knowledge object *are not*
-#       applied and therefore each knowledge object inherits the permissions of the parent application
-#
-#   The README.md for this file exists on https://github.com/gjanders/Splunk (including examples of usage)
-#
-###########################
 
-#Setup the logging, the plan was to default to INFO and change to DEBUG level but it's currently the
-#opposite version of this
+# Setup logging for both console and file output
 logging_config = dict(
-    version = 1,
-    formatters = {
-        'f': {'format':
-              '%(asctime)s %(name)-12s %(levelname)-8s %(message)s'}
+    version=1,
+    formatters={
+        'f': {'format': '%(asctime)s %(name)-12s %(levelname)-8s %(message)s'}
+    },
+    handlers={
+        'h': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'f',
+            'level': logging.DEBUG
         },
-    handlers = {
-        'h': {'class': 'logging.StreamHandler',
-              'formatter': 'f',
-              'level': logging.DEBUG},
-        'file': {'class' : 'logging.handlers.RotatingFileHandler',
-              'filename' : '/tmp/transfer_knowledgeobj.log',
-              'formatter': 'f',
-              'maxBytes' :  10485760,
-              'level': logging.DEBUG,
-              'backupCount': 5 }
-        },
-    root = {
-        'handlers': ['h','file'],
+        'file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': '/tmp/transfer_knowledgeobj.log',
+            'formatter': 'f',
+            'maxBytes': 10485760,
+            'level': logging.DEBUG,
+            'backupCount': 5
+        }
+    },
+    root={
+        'handlers': ['h', 'file'],
         'level': logging.DEBUG,
-        },
+    },
 )
 
 dictConfig(logging_config)
 
 logger = logging.getLogger()
 
-#Create the argument parser
-parser = argparse.ArgumentParser(description='Migrate Splunk configuration from 1 Splunk search head to another Splunk search head via the REST API')
-parser.add_argument('-srcURL', help='URL of the REST/API port of the Splunk instance, https://localhost:8089/ for example', required=True)
-parser.add_argument('-destURL', help='URL of the REST/API port of the Splunk instance, https://localhost:8089/ for example', required=True)
-parser.add_argument('-srcUsername', help='username to use for REST API of srcURL argument', required=True)
-parser.add_argument('-srcPassword', help='password to use for REST API of srcURL argument', required=True)
-parser.add_argument('-srcApp', help='application name on srcURL to be migrated from', required=True)
-parser.add_argument('-destApp', help='(optional) application name to be used on destURL to be migrated to defaults to srcApp')
-parser.add_argument('-destUsername', help='(optional) username to use for REST API of destURL argument defaults to srcUsername')
-parser.add_argument('-destPassword', help='(optional) password to use for REST API of destURL argument defaults to srcPassword')
-parser.add_argument('-destOwner', help='(optional) override the username on the destination app when creating the objects')
-parser.add_argument('-noPrivate', help='(optional) disable the migration of user level / private objects', action='store_true')
-parser.add_argument('-noDisabled', help='(optional) disable the migratio of objects with a disabled status in Splunk', action='store_true')
-parser.add_argument('-all', help='(optional) migrate all knowledge objects', action='store_true')
-parser.add_argument('-macros', help='(optional) migrate macro knowledge objects', action='store_true')
-parser.add_argument('-tags', help='(optional) migrate tag knowledge objects', action='store_true')
-parser.add_argument('-eventtypes', help='(optional) migrate event types knowledge objects', action='store_true')
-parser.add_argument('-allFieldRelated', help='(optional) migrate all objects under fields', action='store_true')
-parser.add_argument('-calcFields', help='(optional) migrate calc fields knowledge objects', action='store_true')
-parser.add_argument('-fieldAlias', help='(optional) migrate field alias knowledge objects', action='store_true')
-parser.add_argument('-fieldExtraction', help='(optional) migrate field extraction knowledge objects', action='store_true')
-parser.add_argument('-fieldTransforms', help='(optional) migrate field transformation knowledge objects (excludes nullQueue formatted transforms)', action='store_true')
-parser.add_argument('-lookupDefinition', help='(optional) migrate lookup definition knowledge objects', action='store_true')
-parser.add_argument('-workflowActions', help='(optional) migrate workflow actions', action='store_true')
-parser.add_argument('-sourcetypeRenaming', help='(optional) migrate sourcetype renaming', action='store_true')
-parser.add_argument('-automaticLookup', help='(optional) migrate automation lookup knowledge objects', action='store_true')
-parser.add_argument('-datamodels', help='(optional) migrate data model knowledge objects', action='store_true')
-parser.add_argument('-dashboards', help='(optional) migrate dashboards (user interface -> views)', action='store_true')
-parser.add_argument('-savedsearches', help='(optional) migrate saved search objects (this includes reports/alerts)', action='store_true')
-parser.add_argument('-navMenu', help='(optional) migrate navigation menus', action='store_true')
-parser.add_argument('-overrideMode', help='(optional) if the remote knowledge object exists, overwrite it with the migrated version only if the migrated version does not have a newer updated time. Skip otherwise', action='store_true')
-parser.add_argument('-overrideAlwaysMode', help='(optional) if the remote knowledge object exists, overwrite it with the migrated version (by default this will not override)', action='store_true')
-parser.add_argument('-collections', help='(optional) migrate collections (kvstore collections)', action='store_true')
-parser.add_argument('-times', help='(optional) migrate time labels (conf-times)', action='store_true')
-parser.add_argument('-panels', help='(optional) migrate pre-built dashboard panels', action='store_true')
-parser.add_argument('-debugMode', help='(optional) turn on DEBUG level logging (defaults to INFO)', action='store_true')
-parser.add_argument('-printPasswords', help='(optional) print passwords in the log files (dev only)', action='store_true')
-parser.add_argument('-includeEntities', help='(optional) comma separated list of object values to include (double quoted)')
-parser.add_argument('-excludeEntities', help='(optional) comma separated list of object values to exclude (double quoted)')
-parser.add_argument('-includeOwner', help='(optional) comma separated list of owners objects that should be transferred (double quoted)')
-parser.add_argument('-excludeOwner', help='(optional) comma separated list of owners objects that should be transferred (double quoted)')
-parser.add_argument('-privateOnly', help='(optional) Only transfer private objects')
-parser.add_argument('-viewstates', help='(optional) migrate viewstates', action='store_true')
-parser.add_argument('-ignoreViewstatesAttribute', help='(optional) when creating saved searches strip the vsid parameter/attribute before attempting to create the saved search', action='store_true')
-parser.add_argument('-disableAlertsOrReportsOnMigration', help='(optional) when creating alerts/reports, set disabled=1 (or enableSched=0) irrelevant of the previous setting pre-migration', action='store_true')
-parser.add_argument('-nameFilter', help='(optional) use a regex filter to find the names of the objects to transfer')
-parser.add_argument('-sharingFilter', help='(optional) only transfer objects with this level of sharing (user, app, global)', choices=['user', 'app', 'global'])
+# Create the argument parser
+parser = argparse.ArgumentParser(
+    description='Migrate Splunk configuration from 1 Splunk search head to another Splunk search head via the REST API'
+)
+parser.add_argument('-srcURL',
+                    help='URL of the REST/API port of the Splunk instance, https://localhost:8089/ for example',
+                    required=True)
+parser.add_argument('-destURL',
+                    help='URL of the REST/API port of the Splunk instance, https://localhost:8089/ for example',
+                    required=True)
+parser.add_argument('-srcUsername', 
+                    help='username to use for REST API of srcURL argument')
+parser.add_argument('-srcPassword', 
+                    help='password to use for REST API of srcURL argument')
+parser.add_argument('-srcApp', 
+                    help='application name on srcURL to be migrated from', 
+                    required=True)
+parser.add_argument('-destApp',
+                    help='(optional) application name to be used on destURL to be migrated to defaults to srcApp')
+parser.add_argument('-destUsername',
+                    help='(optional) username to use for REST API of destURL argument defaults to srcUsername')
+parser.add_argument('-destPassword',
+                    help='(optional) password to use for REST API of destURL argument defaults to srcPassword')
+parser.add_argument('-destOwner',
+                    help='(optional) override the username on the destination app when creating the objects')
+parser.add_argument('-noPrivate',
+                    help='(optional) disable the migration of user level / private objects',
+                    action='store_true')
+parser.add_argument('-noDisabled',
+                    help='(optional) disable the migration of objects with a disabled status in Splunk',
+                    action='store_true')
+parser.add_argument('-all', 
+                    help='(optional) migrate all knowledge objects', action='store_true')
+parser.add_argument('-macros', 
+                    help='(optional) migrate macro knowledge objects', 
+                    action='store_true')
+parser.add_argument('-tags',
+                     help='(optional) migrate tag knowledge objects', 
+                     action='store_true')
+parser.add_argument('-eventtypes', 
+                    help='(optional) migrate event types knowledge objects', 
+                    action='store_true')
+parser.add_argument('-allFieldRelated', 
+                    help='(optional) migrate all objects under fields', 
+                    action='store_true')
+parser.add_argument('-calcFields', 
+                    help='(optional) migrate calc fields knowledge objects', 
+                    action='store_true')
+parser.add_argument('-fieldAlias', 
+                    help='(optional) migrate field alias knowledge objects', 
+                    action='store_true')
+parser.add_argument('-fieldExtraction',
+                    help='(optional) migrate field extraction knowledge objects',
+                    action='store_true')
+parser.add_argument('-fieldTransforms', 
+                    help='(optional) migrate field transformation knowledge objects '
+                         '(excludes nullQueue formatted transforms)',
+                    action='store_true',)
+parser.add_argument('-lookupDefinition',
+                    help='(optional) migrate lookup definition knowledge objects',
+                    action='store_true')
+parser.add_argument('-workflowActions', 
+                    help='(optional) migrate workflow actions', 
+                    action='store_true')
+parser.add_argument('-sourcetypeRenaming',
+                    help='(optional) migrate sourcetype renaming', 
+                    action='store_true')
+parser.add_argument('-automaticLookup',
+                    help='(optional) migrate automation lookup knowledge objects',
+                    action='store_true')
+parser.add_argument('-datamodels', 
+                    help='(optional) migrate data model knowledge objects', 
+                    action='store_true')
+parser.add_argument('-dashboards',
+                    help='(optional) migrate dashboards (user interface -> views)',
+                    action='store_true')
+parser.add_argument('-savedsearches',
+                    help='(optional) migrate saved search objects (this includes reports/alerts)',
+                    action='store_true')
+parser.add_argument('-navMenu', 
+                    help='(optional) migrate navigation menus', 
+                    action='store_true')
+parser.add_argument('-overrideMode',
+                    help='(optional) if the remote knowledge object exists, overwrite it with the migrated '
+                         'version only if the migrated version does not have a newer updated time. Skip otherwise',
+                    action='store_true')
+parser.add_argument('-overrideAlwaysMode',
+                    help='(optional) if the remote knowledge object exists, overwrite it with the migrated version '
+                         '(by default this will not override)',
+                    action='store_true')
+parser.add_argument('-collections', 
+                    help='(optional) migrate collections (kvstore collections)', 
+                    action='store_true')
+parser.add_argument('-times',
+                     help='(optional) migrate time labels (conf-times)', 
+                     action='store_true')
+parser.add_argument('-panels',
+                     help='(optional) migrate pre-built dashboard panels', 
+                     action='store_true')
+parser.add_argument('-debugMode',
+                    help='(optional) turn on DEBUG level logging (defaults to INFO)',
+                    action='store_true')
+parser.add_argument('-printPasswords',
+                    help='(optional) print passwords in the log files (dev only)',
+                    action='store_true')
+parser.add_argument('-includeEntities',
+                    help='(optional) comma separated list of object values to include (double quoted)')
+parser.add_argument('-excludeEntities',
+                    help='(optional) comma separated list of object values to exclude (double quoted)')
+parser.add_argument('-includeOwner',
+                    help='(optional) comma separated list of owners objects that should be transferred (double '
+                         'quoted)')
+parser.add_argument('-excludeOwner',
+                    help='(optional) comma separated list of owners objects that should be transferred (double '
+                         'quoted)')
+parser.add_argument('-privateOnly', 
+                    help='(optional) Only transfer private objects')
+parser.add_argument('-viewstates', 
+                    help='(optional) migrate viewstates', 
+                    action='store_true')
+parser.add_argument('-ignoreViewstatesAttribute',
+                    help='(optional) when creating saved searches strip the vsid parameter/attribute before '
+                         'attempting to create the saved search',
+                    action='store_true')
+parser.add_argument('-disableAlertsOrReportsOnMigration',
+                    help='(optional) when creating alerts/reports, set disabled=1 (or enableSched=0) irrelevant '
+                         'of the previous setting pre-migration',
+                    action='store_true')
+parser.add_argument('-nameFilter',
+                    help='(optional) use a regex filter to find the names of the objects to transfer')
+parser.add_argument('-sharingFilter',
+                    help='(optional) only transfer objects with this level of sharing (user, app, global)',
+                    choices=['user', 'app', 'global'])
+parser.add_argument('-srcAuthtype',
+                    help='(optional) source authentication type',
+                    choices=['password', 'token'],
+                    default='password')
+parser.add_argument('-destAuthtype',
+                    help='(optional) destination authentication type',
+                    choices=['password', 'token'],
+                    default='password')
+parser.add_argument('-srcToken',
+                    help='(optional) token to use for REST API of srcURL argument (required if srcAuthtype=token)')
+parser.add_argument('-destToken',
+                    help='(optional) token to use for REST API of destURL argument (required if destAuthtype=token)')
 
 args = parser.parse_args()
 
-#If we want debugMode, keep the debug logging, otherwise drop back to INFO level
+# If we want debugMode, keep the debug logging, otherwise drop back to INFO level
 if not args.debugMode:
     logging.getLogger().setLevel(logging.INFO)
 
+# Validate authentication parameters
+if args.srcAuthtype == 'token':
+    if not args.srcToken:
+        parser.error("srcToken is required when srcAuthtype=token")
+elif args.srcAuthtype == 'password':
+    if not args.srcUsername or not args.srcPassword:
+        parser.error("srcUsername and srcPassword are required when srcAuthtype=password")
+
+if args.destAuthtype == 'token':
+    if not args.destToken:
+        parser.error("destToken is required when destAuthtype=token")
+elif args.destAuthtype == 'password':
+    if not args.destUsername or not args.destPassword:
+        parser.error("destUsername and destPassword are required when destAuthtype=password")
+
 srcApp = args.srcApp
-destApp = ""
 if args.destApp:
     destApp = args.destApp
 else:
     destApp = srcApp
 
-srcUsername = args.srcUsername
-destUsername = ""
+if args.srcUsername:
+    srcUsername = args.srcUsername
+else:
+    srcUsername = ""
+
 if args.destUsername:
     destUsername = args.destUsername
 else:
-    destUsername = srcUsername
+    destUsername = ""
 
-srcPassword = args.srcPassword
-destPassword = ""
+if args.srcPassword:
+    srcPassword = args.srcPassword
+else:
+    srcPassword = ""
+
 if args.destPassword:
     destPassword = args.destPassword
 else:
-    destPassword = srcPassword
+    destPassword = ""
 
-destOwner=False
+if args.srcToken:
+    srcToken = args.srcToken
+else:
+    srcToken = ""
+
+if args.destToken:
+    destToken = args.destToken
+else:
+    destToken = ""
+
+destOwner = False
 if args.destOwner:
     destOwner = args.destOwner
 
 if args.nameFilter:
     nameFilter = re.compile(args.nameFilter)
 
-#From server
+# From server
 splunk_rest = args.srcURL
 
-#Destination server
+# Destination server
 splunk_rest_dest = args.destURL
 
-#As per https://stackoverflow.com/questions/1101508/how-to-parse-dates-with-0400-timezone-string-in-python/23122493#23122493
-def determineTime(timestampStr, name, app, type):
-    logger.debug("Attempting to convert %s to timestamp for %s name, in app %s for type %s" % (timestampStr, name, app, type))
-    ret = datetime.strptime(timestampStr[0:19],  "%Y-%m-%dT%H:%M:%S")
-    if timestampStr[19]=='+':
-        ret-=timedelta(hours=int(timestampStr[20:22]),minutes=int(timestampStr[24:]))
-    elif timestampStr[19]=='-':
-        ret+=timedelta(hours=int(timestampStr[20:22]),minutes=int(timestampStr[24:]))
-    logger.debug("Converted time is %s to timestamp for %s name, in app %s for type %s" % (ret, name, app, type))
+
+def make_request(url, method='get', auth_type='password', username='', password='', token='', data=None, verify=False):
+    """
+    Centralized function to make HTTP requests with either token or password authentication.
+
+    Args:
+        url (str): The endpoint URL.
+        method (str): HTTP method ('get', 'post', 'delete').
+        auth_type (str): Authentication type ('password' or 'token').
+        username (str): Username for basic auth.
+        password (str): Password for basic auth.
+        token (str): Token for bearer auth.
+        data (dict): Data to send in POST requests.
+        verify (bool): Whether to verify SSL certificates.
+
+    Returns:
+        requests.Response: The HTTP response object.
+    """
+    headers = {}
+    auth = None
+    max_retries = 5
+    base_delay = 1  # seconds
+
+    if auth_type == 'token':
+        headers['Authorization'] = f'Bearer {token}'
+    else:
+        auth = (username, password)
+
+    for attempt in range(max_retries):
+        try:
+            if method.lower() == 'get':
+                return requests.get(url, auth=auth, headers=headers, verify=verify, timeout=30)
+            elif method.lower() == 'post':
+                return requests.post(url, auth=auth, headers=headers, verify=verify, data=data, timeout=30)
+            elif method.lower() == 'delete':
+                return requests.delete(url, auth=auth, headers=headers, verify=verify, timeout=30)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+        except (ConnectionError, Timeout) as e:
+            logger.warning(f"Request to {url} failed (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                logger.info(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+            else:
+                logger.error(f"Max retries exceeded for {url}.")
+                raise  # Re-raise the last exception after all retries fail
+        except requests.exceptions.RequestException as e:
+            logger.error(f"An unexpected error occurred during request to {url}: {e}")
+            raise
+
+
+def check_and_create_user(host, port, auth_type, username, password, token, user_to_check):
+    """
+    Check if a user exists on the destination system and create them if they don't
+
+    Args:
+        host: Destination Splunk host
+        port: Destination Splunk port
+        auth_type: Authentication type ('password' or 'token')
+        username: Username for auth
+        password: Password for auth
+        token: Token for auth
+        user_to_check: Username to check/create
+
+    Returns:
+        bool: True if user exists or was created successfully, False otherwise
+    """
+    # Extract host from URL if needed
+    if host.startswith('https://') or host.startswith('http://'):
+        host = host.replace('https://', '').replace('http://', '').split('/')[0]
+
+    # Check if user exists
+    check_url = f"https://{host}:{port}/services/authentication/users/{user_to_check}"
+
+    try:
+        response = make_request(check_url, method='get', auth_type=auth_type,
+                              username=username, password=password, token=token, verify=False)
+
+        if response.status_code == 200:
+            logger.debug(f"User '{user_to_check}' already exists on destination")
+            return True
+        elif response.status_code == 404:
+            logger.info(f"User '{user_to_check}' does not exist on destination, creating...")
+
+            # Generate random 16 character password
+            random_password = ''.join(random.choices(string.ascii_letters + string.digits + '!@#$%^&*', k=16))
+
+            # Create the user
+            create_url = f"https://{host}:{port}/services/authentication/users"
+            create_data = {
+                'name': user_to_check,
+                'password': random_password,
+                'roles': 'user',  # Default role
+                'force-change-pass': '1'  # Force password change on first login
+            }
+
+            create_response = make_request(create_url, method='post', auth_type=auth_type,
+                                         username=username, password=password, token=token,
+                                         data=create_data, verify=False)
+
+            if create_response.status_code in [200, 201]:
+                logger.info(f"Successfully created user '{user_to_check}' on destination")
+                logger.info(f"User '{user_to_check}' created with temporary password '{random_password}' " +
+                          "and will be forced to change on first login")
+                return True
+            else:
+                logger.error(f"Failed to create user '{user_to_check}': " +
+                           f"status={create_response.status_code}, response={create_response.text}")
+                return False
+        else:
+            logger.error(f"Failed to check user '{user_to_check}': " +
+                       f"status={response.status_code}, response={response.text}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error checking/creating user '{user_to_check}': {e}")
+        return False
+
+
+def get_app_acl(host, port, auth_type, username, password, token, app_name):
+    """
+    Get ACL information for an app
+
+    Args:
+        host: Splunk host
+        port: Splunk port
+        auth_type: Authentication type ('password' or 'token')
+        username: Username for auth
+        password: Password for auth
+        token: Token for auth
+        app_name: App name to get ACL for
+
+    Returns:
+        dict: ACL information or None if failed
+    """
+    # Extract host from URL if needed
+    if host.startswith('https://') or host.startswith('http://'):
+        host = host.replace('https://', '').replace('http://', '').split('/')[0]
+
+    check_url = f"https://{host}:{port}/services/apps/local/{app_name}?output_mode=json"
+
+    try:
+        response = make_request(check_url, method='get', auth_type=auth_type,
+                              username=username, password=password, token=token, verify=False)
+
+        if response.status_code == 200:
+            data = response.json()
+            if 'entry' in data and len(data['entry']) > 0:
+                acl = data['entry'][0].get('acl', {})
+                logger.debug(f"Retrieved ACL for app '{app_name}': " +
+                           f"sharing={acl.get('sharing')}, owner={acl.get('owner')}")
+                return acl
+
+        logger.warning(f"Could not retrieve ACL for app '{app_name}': status={response.status_code}")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error getting ACL for app '{app_name}': {e}")
+        return None
+
+
+def set_app_acl(host, port, auth_type, username, password, token, app_name, acl_info):
+    """
+    Set ACL on an app to match source ACL
+
+    Args:
+        host: Destination Splunk host
+        port: Destination Splunk port
+        auth_type: Authentication type ('password' or 'token')
+        username: Username for auth
+        password: Password for auth
+        token: Token for auth
+        app_name: App name to set ACL on
+        acl_info: ACL dictionary from source app
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Extract host from URL if needed
+    if host.startswith('https://') or host.startswith('http://'):
+        host = host.replace('https://', '').replace('http://', '').split('/')[0]
+
+    # Get the owner from ACL info
+    owner = acl_info.get('owner', 'nobody')
+
+    # Check and create the owner user if needed (unless it's 'nobody')
+    if owner != 'nobody':
+        user_exists = check_and_create_user(host, port, auth_type, username, password, token, owner)
+
+        if not user_exists:
+            logger.warning(f"Cannot create or verify owner '{owner}' for app '{app_name}' ACL - using 'nobody' instead")
+            owner = 'nobody'
+
+    acl_url = f"https://{host}:{port}/services/apps/local/{app_name}/acl"
+
+    # Build ACL data from source
+    acl_data = {
+        'output_mode': 'json',
+        'owner': owner,
+        'sharing': acl_info.get('sharing', 'app')
+    }
+
+    # Add permissions if they exist
+    perms = acl_info.get('perms', {})
+    if 'read' in perms and perms['read']:
+        if isinstance(perms['read'], list):
+            acl_data['perms.read'] = ','.join(perms['read'])
+        else:
+            acl_data['perms.read'] = str(perms['read'])
+
+    if 'write' in perms and perms['write']:
+        if isinstance(perms['write'], list):
+            acl_data['perms.write'] = ','.join(perms['write'])
+        else:
+            acl_data['perms.write'] = str(perms['write'])
+
+    try:
+        response = make_request(acl_url, method='post', auth_type=auth_type,
+                              username=username, password=password, token=token,
+                              data=acl_data, verify=False)
+
+        if response.status_code in [200, 201]:
+            logger.info(f"Successfully set ACL on app '{app_name}' " +
+                       f"(sharing: {acl_data['sharing']}, owner: {acl_data['owner']})")
+            return True
+        else:
+            logger.warning(f"Failed to set ACL on app '{app_name}': " +
+                         f"status={response.status_code}, response={response.text}")
+            return False
+
+    except Exception as e:
+        logger.warning(f"Error setting ACL on app '{app_name}': {e}")
+        return False
+
+
+def check_and_create_app(host, port, auth_type, username, password, token, app_name, source_acl=None):
+    """
+    Check if an app exists on the destination system and create it if it doesn't
+
+    Args:
+        host: Destination Splunk host
+        port: Destination Splunk port
+        auth_type: Authentication type ('password' or 'token')
+        username: Username for auth
+        password: Password for auth
+        token: Token for auth
+        app_name: App name to check/create
+        source_acl: ACL info from source app to replicate (optional)
+
+    Returns:
+        bool: True if app exists or was created successfully, False otherwise
+    """
+    # Extract host from URL if needed
+    if host.startswith('https://') or host.startswith('http://'):
+        host = host.replace('https://', '').replace('http://', '').split('/')[0]
+
+    # Check if app exists
+    check_url = f"https://{host}:{port}/services/apps/local/{app_name}"
+
+    try:
+        response = make_request(check_url, method='get', auth_type=auth_type,
+                              username=username, password=password, token=token, verify=False)
+
+        if response.status_code == 200:
+            logger.debug(f"App '{app_name}' already exists on destination")
+            return True
+        elif response.status_code == 404:
+            logger.info(f"App '{app_name}' does not exist on destination, creating...")
+
+            # Create the app
+            create_url = f"https://{host}:{port}/services/apps/local"
+            create_data = {
+                'name': app_name,
+                'label': app_name,
+                'visible': '1',
+                'author': 'auto-created',
+                'description': f'Auto-created app during knowledge object transfer'
+            }
+
+            create_response = make_request(create_url, method='post', auth_type=auth_type,
+                                         username=username, password=password, token=token,
+                                         data=create_data, verify=False)
+
+            if create_response.status_code in [200, 201]:
+                logger.info(f"Successfully created app '{app_name}' on destination")
+
+                # Set ACL to match source if provided
+                if source_acl:
+                    set_app_acl(host, port, auth_type, username, password, token, app_name, source_acl)
+
+                return True
+            else:
+                logger.error(f"Failed to create app '{app_name}': " +
+                           f"status={create_response.status_code}, response={create_response.text}")
+                return False
+        else:
+            logger.error(f"Failed to check app '{app_name}': " +
+                       f"status={response.status_code}, response={response.text}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error checking/creating app '{app_name}': {e}")
+        return False
+
+
+# As per
+# https://stackoverflow.com/questions/1101508/how-to-parse-dates-with-0400-timezone-string-in-python/23122493#23122493
+def determineTime(timestampStr, name, app, obj_type):
+    logger.debug(
+        f"Attempting to convert {timestampStr} to timestamp for {name} name, "
+        f"in app {app} for type {obj_type}"
+    )
+    ret = datetime.strptime(timestampStr[0:19], "%Y-%m-%dT%H:%M:%S")
+    if timestampStr[19] == '+':
+        ret -= timedelta(hours=int(timestampStr[20:22]), minutes=int(timestampStr[24:]))
+    elif timestampStr[19] == '-':
+        ret += timedelta(hours=int(timestampStr[20:22]), minutes=int(timestampStr[24:]))
+    logger.debug(
+        f"Converted time is {ret} to timestamp for {name} name, in app {app} "
+        f"for type {obj_type}"
+    )
     return ret
 
+
 def appendToResults(resultsDict, name, result):
-    if not name in resultsDict:
+    if name not in resultsDict:
         resultsDict[name] = []
     resultsDict[name].append(result)
+
 
 def popLastResult(resultsDict, name):
     if name in resultsDict:
@@ -167,62 +627,81 @@ def popLastResult(resultsDict, name):
 ###########################
 #
 # runQueries (generic version)
-#   This attempts to call the REST API of the srcServer, parses the resulting XML data and re-posts the relevant sections to the
-#   destination server
+#   This attempts to call the REST API of the srcServer, parses the resulting XML data and re-posts the relevant
+#   sections to the destination server
 #   This method works for everything excluding macros which have a different process
-#   Due to variations in the REST API there are a few hacks inside this method to handle specific use cases, however the majority are straightforward
+#   Due to variations in the REST API there are a few hacks inside this method to handle specific use cases,
+#   however the majority are straightforward
 #
 ###########################
-def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="", destOwner=False, noPrivate=False, noDisabled=False, override=None, includeEntities=None, excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None, disableAlertsOrReportsOnMigration=False, overrideAlways=None, actionResults=None, extra_args=""):
-    #Keep a success/Failure list to be returned by this function
-    #actionResults = {}
+def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttributes={}, valueAliases={}, nameOverride="",
+               destOwner=False, noPrivate=False, noDisabled=False, override=None, includeEntities=None,
+               excludeEntities=None, includeOwner=None, excludeOwner=None, privateOnly=None,
+               disableAlertsOrReportsOnMigration=False, overrideAlways=None, actionResults=None):
+    # Keep a success/failure list to be returned by this function
+    # actionResults = {}
 
-    #Use count=-1 to ensure we see all the objects
-    url = splunk_rest + "/servicesNS/-/" + app + endpoint + "?count=-1" + extra_args
-    logger.debug("Running requests.get() on %s with username %s in app %s" % (url, srcUsername, app))
+    # Use count=-1 to ensure we see all the objects
+    url = f"{splunk_rest}/servicesNS/-/{app}{endpoint}?count=-1"
+    logger.debug(f"Running requests.get() on {url} with username {srcUsername} in app {app}")
 
-    #Verify=false is hardcoded to workaround local SSL issues
-    res = requests.get(url, auth=(srcUsername, srcPassword), verify=False)
-    if (res.status_code != requests.codes.ok):
-        logger.error("URL %s in app %s status code %s reason %s, response: '%s'" % (url, app, res.status_code, res.reason, res.text))
+    # Verify=false is hardcoded to workaround local SSL issues
+    res = make_request(
+        url, method='get', auth_type=args.srcAuthtype, username=srcUsername,
+        password=srcPassword, token=args.srcToken, verify=False
+    )
+    if res.status_code != requests.codes.ok:
+        logger.error(
+            f"URL {url} in app {app} status code {res.status_code} reason "
+            f"{res.reason}, response: '{res.text}'"
+        )
 
     #Splunk returns data in XML format, use the element tree to work through it
     root = ET.fromstring(res.text)
 
     infoList = {}
     for child in root:
-        #Working per entry in the results
+        # Working per entry in the results
         if child.tag.endswith("entry"):
-            #Down to each entry level
+            # Down to each entry level
             info = {}
-            #Some lines of data we do not want to keep, assume we want it
+            # Some lines of data we do not want to keep, assume we want it
             keep = True
+            acl_info = {}  # Store complete ACL information
             for innerChild in child:
-                #title / name attribute
+                # title / name attribute
                 if innerChild.tag.endswith("title"):
                     title = innerChild.text
                     info["name"] = title
-                    logger.debug("%s is the name/title of this entry for type %s in app %s" % (title, type, app))
-                    #If we have an include/exclude list we deal with that scenario now
+                    logger.debug(
+                        f"{title} is the name/title of this entry for type {type} in app {app}"
+                    )
+                    # If we have an include/exclude list we deal with that scenario now
                     if includeEntities:
-                        if not title in includeEntities:
-                            logger.debug("%s of type %s not in includeEntities list in app %s" % (title, type, app))
+                        if title not in includeEntities:
+                            logger.debug(
+                                f"{title} of type {type} not in includeEntities list in app {app}"
+                            )
                             keep = False
                             break
                     if excludeEntities:
                         if title in excludeEntities:
-                            logger.debug("%s of type %s in excludeEntities list in app %s" % (title, type, app))
+                            logger.debug(
+                                f"{title} of type {type} in excludeEntities list in app {app}"
+                            )
                             keep = False
                             break
 
                     if args.nameFilter:
                         if not nameFilter.search(title):
-                            logger.debug("%s of type %s does not match regex in app %s" % (title, type, app))
+                            logger.debug(
+                                f"{title} of type {type} does not match regex in app {app}"
+                            )
                             keep = False
                             break
 
-                    #Backup the original name if we override it, override works fine for creation
-                    #but updates require the original name
+                    # Backup the original name if we override it, override works fine for creation
+                    # but updates require the original name
                     if 'name' in list(aliasAttributes.values()):
                         info["origName"] = title
 
@@ -230,95 +709,146 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                     updatedStr = innerChild.text
                     updated = determineTime(updatedStr, info["name"], app, type)
                     info['updated'] = updated
-                    logger.debug("name %s, type %s in app %s was updated on %s" % (title, type, app, updated))
-                #Content apepars to be where 90% of the data we want is located
+                    logger.debug(f"name {title}, type {type} in app {app} was updated on {updated}")
+                #Content appears to be where 90% of the data we want is located
                 elif innerChild.tag.endswith("content"):
-
-                    # optimisation to deal with the giant display.visualizations... on savedsearches only
-                    skip_visualizations = True
-
                     for theAttribute in innerChild[0]:
-                        #acl has the owner, sharing and app level which we required (sometimes there is eai:app but it's not 100% consistent so this is safer
-                        #also have switched from author to owner as it's likely the safer option...
+                        # acl has the owner, sharing and app level which we required (sometimes there is eai:app but
+                        # it's not 100% consistent so this is safer also have switched from author to owner as it's
+                        # likely the safer option...
                         if theAttribute.attrib['name'] == 'eai:acl':
                             for theList in theAttribute[0]:
                                 if theList.attrib['name'] == 'sharing':
-                                    logger.debug("%s of type %s has sharing %s in app %s" % (info["name"], type, theList.text, app))
+                                    logger.debug(
+                                        f"{info['name']} of type {type} has sharing {theList.text} in app {app}"
+                                    )
                                     info["sharing"] = theList.text
+                                    acl_info["sharing"] = theList.text
                                     if noPrivate and info["sharing"] == "user":
-                                        logger.debug("%s of type %s found but the noPrivate flag is true, excluding this in app %s" % (info["name"], type, app))
+                                        logger.debug(
+                                            f"{info['name']} of type {type} found but the noPrivate flag is true, "
+                                            f"excluding this in app {app}"
+                                        )
                                         keep = False
                                         break
                                     elif privateOnly and info["sharing"] != "user":
-                                        logger.debug("%s of type %s found but the privateOnly flag is true and value of %s is not user level sharing (private), excluding this in app %s" % (info["name"], type, info["sharing"], app))
+                                        logger.debug(
+                                            f"{info['name']} of type {type} found but the privateOnly flag is true "
+                                            f"and value of {info['sharing']} is not user level sharing (private), "
+                                            f"excluding this in app {app}"
+                                        )
                                         keep = False
                                         break
 
                                     if args.sharingFilter and not args.sharingFilter == info["sharing"]:
-                                        logger.debug("%s of type %s found but the sharing level is set to %s and this object has sharing %s excluding this in app %s" % (info["name"], type, args.sharingFilter, info["sharing"], app))
+                                        logger.debug(
+                                            f"{info['name']} of type {type} found but the sharing level is set to "
+                                            f"{args.sharingFilter} and this object has sharing {info['sharing']} "
+                                            f"excluding this in app {app}"
+                                        )
                                         keep = False
                                         break
 
                                 elif theList.attrib['name'] == 'app':
                                     foundApp = theList.text
-                                    logger.debug("%s of type %s in app context of %s belongs to %s" % (info["name"], type, app, foundApp))
-                                    #We can see globally shared objects in our app context, it does not mean we should migrate them as it's not ours...
+                                    acl_info["app"] = foundApp
+                                    logger.debug(
+                                        f"{info['name']} of type {type} in app context of {app} belongs to {foundApp}"
+                                    )
+                                    #We can see globally shared objects in our app context, it does not mean we should
+                                    # migrate them as it's not ours...
                                     if app != foundApp:
-                                        logger.debug("%s of type %s found in app context of %s belongs to app context %s, excluding from app %s" % (info["name"], type, app, foundApp, app))
+                                        logger.debug(
+                                            f"{info['name']} of type {type} found in app context of {app} "
+                                            f"belongs to app context {foundApp}, excluding from app {app}"
+                                        )
                                         keep = False
                                         break
                                 #owner is seen as a nicer alternative to the author variable
                                 elif theList.attrib['name'] == 'owner':
                                     owner = theList.text
+                                    acl_info["owner"] = owner
 
                                     #If we have include or exlcude owner lists we deal with this now
                                     if includeOwner:
                                         if not owner in includeOwner:
-                                            logger.debug("%s of type %s with owner %s not in includeOwner list in app %s" % (info["name"], type, owner, app))
+                                            logger.debug(
+                                                f"{info['name']} of type {type} with owner {owner} not in "
+                                                f"includeOwner list in app {app}"
+                                            )
                                             keep = False
                                             break
                                     if excludeOwner:
                                         if owner in excludeOwner:
-                                            logger.debug("%s of type %s with owner %s in excludeOwner list in app %s" % (info["name"], type, owner, app))
+                                            logger.debug(
+                                                f"{info['name']} of type {type} with owner {owner} in "
+                                                f"excludeOwner list in app {app}"
+                                            )
                                             keep = False
                                             break
-                                    logger.debug("%s of type %s has owner %s in app %s" % (info["name"], type, owner, app))
+                                    logger.debug(
+                                        f"{info['name']} of type {type} has owner {owner} in app {app}"
+                                    )
                                     info["owner"] = owner
+                                # Capture read permissions
+                                elif theList.attrib['name'] == 'perms':
+                                    if 'perms' not in acl_info:
+                                        acl_info['perms'] = {}
+                                    for perm in theList:
+                                        if perm.attrib['name'] == 'read':
+                                            read_perms = []
+                                            for item in perm:
+                                                read_perms.append(item.text)
+                                            acl_info['perms']['read'] = read_perms
+                                            logger.debug(f"{info["name"]} of type {type} has read permissions "
+                                                         f"{read_perms} in app {app}")
+                                        elif perm.attrib['name'] == 'write':
+                                            write_perms = []
+                                            for item in perm:
+                                                write_perms.append(item.text)
+                                            acl_info['perms']['write'] = write_perms
+                                            logger.debug(f"{info["name"]} of type {type} has write permissions "
+                                                         f"{write_perms} in app {app}")
 
                         else:
                             #We have other attributes under content, we want the majority of them
                             attribName = theAttribute.attrib['name']
 
-                            #Under some circumstances we want the attribute and contents but we want to call it a different name...
+                            # Under some circumstances we want the attribute and contents but we want to call
+                            # it a different name...
                             if attribName in aliasAttributes:
                                 attribName = aliasAttributes[attribName]
 
                             #If it's disabled *and* we don't want disabled objects we can determine this here
                             if attribName == "disabled" and noDisabled and theAttribute.text == "1":
-                                logger.debug("%s of type %s is disabled and the noDisabled flag is true, excluding this in app %s" % (info["name"], type, app))
+                                logger.debug(f"{info["name"]} of type {type} is disabled and the noDisabled flag is "
+                                             f"true, excluding this in app {app}")
                                 keep = False
                                 break
 
-                            #Field extractions change from "Uses transform" to "REPORT" And "Inline" to "EXTRACTION" for some strange reason...
-                            #therefore we have a list of attribute values that we deal with here which get renamed to the provided values
+                            #Field extractions change from "Uses transform" to "REPORT" And "Inline" to "EXTRACTION"
+                            # for some strange reason...therefore we have a list of attribute values that we deal with
+                            # here which get renamed to the provided values
                             if theAttribute.text in valueAliases:
                                 theAttribute.text = valueAliases[theAttribute.text]
 
-                            logger.debug("%s of type %s found key/value of %s=%s in app context %s" % (info["name"], type, attribName, theAttribute.text, app))
+                            logger.debug(f"{info["name"]} of type {type} found key/value of "
+                                         f"{attribName}={theAttribute.text} in app context {app}" )
 
-                            #Yet another hack, this time to deal with collections using accelrated_fields.<value> when looking at it via REST GET requests, but
-                            #requiring accelerated_fields to be used when POST'ing the value to create the collection!
+                            #Yet another hack, this time to deal with collections using accelrated_fields.<value> when
+                            # looking at it via REST GET requests, but requiring accelerated_fields to be used when
+                            # POST'ing the value to create the collection!
                             if type == "collections (kvstore definition)" and attribName.find("accelrated_fields") == 0:
                                 attribName = "accelerated_fields" + attribName[17:]
 
                             #Hack to deal with datamodel tables not working as expected
-                            if attribName == "description" and type=="datamodels" and "dataset.type" in info and info["dataset.type"] == "table":
-                                #For an unknown reason the table datatype has extra fields in the description which must be removed
-                                #however we have to find them first...
-                                #For an unknown reason the table datatype has extra fields in the description which must be removed
-                                #however we have to find them first...
+                            if attribName == "description" and type=="datamodels" and \
+                                "dataset.type" in info and info["dataset.type"] == "table":
+                                #For an unknown reason the table datatype has extra fields in the description
+                                # which must be removed however we have to find them first...
                                 res = json.loads(theAttribute.text)
                                 fields = res['objects'][0]['fields']
+
                                 #We're looking through the dictionary and deleting from it so copy
                                 #the dictionary so we can safely iterate through while deleting from the
                                 #real copy
@@ -333,42 +863,50 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
 
                                 res = json.dumps(res)
                                 info[attribName] = res
-                            #Optimisation related to savedsearches if we're not a saved search using the visualisations tab, don't backup the display.visualizations...
-                            elif type=="savedsearches" and attribName == "display.general.type" and theAttribute.text=="visualizations":
-                                logger.debug("name=\"%s\" of type=%s found %s=%s in app context app=%s changing skip_visualizations to false" % (info["name"], type, attribName, theAttribute.text, app))
-                                info[attribName] = theAttribute.text
-                                skip_visualizations = False
                             #We keep the attributes that are not None
                             elif theAttribute.text:
-                                if skip_visualizations and attribName.find("display.visualizations.") == 0:
-                                    logger.debug("name=\"%s\" of type=%s found %s=%s in app context app=%s skipping as skip_visualizations is true" % (info["name"], type, attribName, theAttribute.text, app))
-                                else:
-                                    info[attribName] = theAttribute.text
-                            #A hack related to automatic lookups, where a None / empty value must be sent through as "", otherwise requests will strip the entry from the
-                            #post request. In the case of an automatic lookup we want to send through the empty value...
+                                info[attribName] = theAttribute.text
+                            #A hack related to automatic lookups, where a None / empty value must be sent through
+                            # as "", otherwise requests will strip the entry from the post request. In the case of
+                            # an automatic lookup we want to send through the empty value...
                             elif type=="automatic lookup" and theAttribute.text == None:
                                 info[attribName] = ""
             #If we have not set the keep flag to False
             if keep:
+                # Store the complete ACL information
+                info["acl_info"] = acl_info
+
                 if nameOverride != "":
                     info["origName"] = info["name"]
                     info["name"] = info[nameOverride]
-                    #TODO hack to handle field extractions where they have an extra piece of info in the name
-                    #as in the name is prepended with EXTRACT-, REPORT- or LOOKUP-, we need to remove this before creating
-                    #the new version
-                    if type=="fieldextractions" and info["name"].find("EXTRACT-") == 0:
-                        logger.debug("Overriding name of %s of type %s in app context %s with owner %s to new name of %s" % (info["name"], type, app, info["owner"], info["name"][8:]))
+                    # TODO: Hack to handle field extractions where they have an extra piece of
+                    # info in the name, as in the name is prepended with EXTRACT-, REPORT- or
+                    # LOOKUP-. We need to remove this before creating the new version.
+                    if type == "fieldextractions" and info["name"].find("EXTRACT-") == 0:
+                        logger.debug(
+                            f"Overriding name of {info['name']} of type {type} in app context "
+                            f"{app} with owner {info['owner']} to new name of {info['name'][8:]}"
+                        )
                         info["name"] = info["name"][8:]
-                    elif type=="fieldextractions" and info["name"].find("REPORT-") == 0:
-                        logger.debug("Overriding name of %s of type %s in app context %s with owner %s to new name of %s" % (info["name"], type, app, info["owner"], info["name"][7:]))
+                    elif type == "fieldextractions" and info["name"].find("REPORT-") == 0:
+                        logger.debug(
+                            f"Overriding name of {info['name']} of type {type} in app context "
+                            f"{app} with owner {info['owner']} to new name of {info['name'][7:]}"
+                        )
                         info["name"] = info["name"][7:]
-                    elif type=="automatic lookup" and info["name"].find("LOOKUP-") == 0:
-                        logger.debug("Overriding name of %s of type %s in app context %s with owner %s to new name of %s" % (info["name"], type, app, info["owner"], info["name"][7:]))
+                    elif type == "automatic lookup" and info["name"].find("LOOKUP-") == 0:
+                        logger.debug(
+                            f"Overriding name of {info['name']} of type {type} in app context "
+                            f"{app} with owner {info['owner']} to new name of {info['name'][7:]}"
+                        )
                         info["name"] = info["name"][7:]
-                    elif type=="fieldaliases":
+                    elif type == "fieldaliases":
                         newName = info["name"]
-                        newName = newName[newName.find("FIELDALIAS-")+11:]
-                        logger.debug("Overriding name of %s of type %s in app context %s with owner %s to new name of %s" % (info["name"], type, app, info["owner"], newName))
+                        newName = newName[newName.find("FIELDALIAS-") + 11:]
+                        logger.debug(
+                            f"Overriding name of {info['name']} of type {type} in app context "
+                            f"{app} with owner {info['owner']} to new name of {newName}"
+                        )
                         info["name"] = newName
                 #Some attributes are not used to create a new version so we remove them...(they may have been used above first so we kept them until now)
                 for attribName in fieldIgnoreList:
@@ -380,36 +918,74 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
                 if sharing not in infoList:
                     infoList[sharing] = []
 
-                #REST API does not support the creation of null queue entries as tested in 7.0.5 and 7.2.1, these are also unused on search heads anyway so ignoring these with a warning
+                # REST API does not support the creation of null queue entries as tested in 7.0.5 and 7.2.1,
+                # these are also unused on search heads anyway so ignoring these with a warning
                 if type == "fieldtransformations" and "FORMAT" in info and info["FORMAT"] == "nullQueue":
-                    logger.warning("Dropping the transfer of %s of type %s in app context %s with owner %s because nullQueue entries cannot be created via REST API (and they are not required in search heads)" % (info["name"], type, app, info["owner"]))
+                    logger.warning(
+                        f"Dropping the transfer of {info['name']} of type {type} in app context "
+                        f"{app} with owner {info['owner']} because nullQueue entries cannot be "
+                        f"created via REST API (and they are not required in search heads)"
+                    )
                 else:
                     infoList[sharing].append(info)
-                    logger.info("Recording %s info for %s in app context %s with owner %s" % (type, info["name"], app, info["owner"]))
+                    logger.info(
+                        f"Recording {type} info for {info['name']} in app context {app} "
+                        f"with owner {info['owner']}"
+                    )
 
-                #If we are migrating but leaving the old app enabled in a previous environment we may not want to leave the report and/or alert enabled
+                # If we are migrating but leaving the old app enabled in a previous environment
+                # we may not want to leave the report and/or alert enabled
                 if disableAlertsOrReportsOnMigration and type == "savedsearches":
                     if "disabled" in info and info["disabled"] == "0" and "alert_condition" in info:
-                        logger.info("%s of type %s (alert) in app %s with owner %s was enabled but disableAlertsOrReportOnMigration set, setting to disabled" % (type, info["name"], app, info["owner"]))
+                        logger.info(
+                            f"{type} of type {info['name']} (alert) in app {app} with owner "
+                            f"{info['owner']} was enabled but disableAlertsOrReportOnMigration set, "
+                            f"setting to disabled"
+                        )
                         info["disabled"] = 1
-                    elif "is_scheduled" in info and "alert_condition" not in info and info["is_scheduled"] == "1":
+                    elif "is_scheduled" in info and "alert_condition" not in info and \
+                            info["is_scheduled"] == "1":
                         info["is_scheduled"] = 0
-                        logger.info("%s of type %s (scheduled report) in app %s with owner %s was enabled but disableAlertsOrReportOnMigration set, setting to disabled" % (type, info["name"], app, info["owner"]))
+                        logger.info(
+                            f"{type} of type {info['name']} (scheduled report) in app {app} with "
+                            f"owner {info['owner']} was enabled but disableAlertsOrReportOnMigration "
+                            f"set, setting to disabled"
+                        )
+
     app = destApp
 
-    #Cycle through each one we need to migrate, we do global/app/user as users can duplicate app level objects with the same names
-    #but we create everything at user level first then re-own it so global/app must happen first
+    # Cycle through each one we need to migrate. We process global/app/user
+    # as users can duplicate app level objects with the same names, but we create
+    # everything at user level first then re-own it, so global/app must happen first.
     if "global" in infoList:
-        logger.debug("Now running runQueriesPerList with knowledge objects of type %s with global level sharing in app %s" % (type, app))
-        runQueriesPerList(infoList["global"], destOwner, type, override, app, splunk_rest_dest, endpoint, actionResults, overrideAlways)
+        logger.debug(
+            f"Now running runQueriesPerList with knowledge objects of type {type} "
+            f"with global level sharing in app {app}"
+        )
+        runQueriesPerList(
+            infoList["global"], destOwner, type, override, app, splunk_rest_dest,
+            endpoint, actionResults, overrideAlways
+        )
 
     if "app" in infoList:
-        logger.debug("Now running runQueriesPerList with knowledge objects of type %s with app level sharing in app %s" % (type, app))
-        runQueriesPerList(infoList["app"], destOwner, type, override, app, splunk_rest_dest, endpoint, actionResults, overrideAlways)
+        logger.debug(
+            f"Now running runQueriesPerList with knowledge objects of type {type} "
+            f"with app level sharing in app {app}"
+        )
+        runQueriesPerList(
+            infoList["app"], destOwner, type, override, app, splunk_rest_dest,
+            endpoint, actionResults, overrideAlways
+        )
 
     if "user" in infoList:
-        logger.debug("Now running runQueriesPerList with knowledge objects of type %s with user (private) level sharing in app %s" % (type, app))
-        runQueriesPerList(infoList["user"], destOwner, type, override, app, splunk_rest_dest, endpoint, actionResults, overrideAlways)
+        logger.debug(
+            f"Now running runQueriesPerList with knowledge objects of type {type} "
+            f"with user (private) level sharing in app {app}"
+        )
+        runQueriesPerList(
+            infoList["user"], destOwner, type, override, app, splunk_rest_dest,
+            endpoint, actionResults, overrideAlways
+        )
 
     return actionResults
 
@@ -419,57 +995,99 @@ def runQueries(app, endpoint, type, fieldIgnoreList, destApp, aliasAttributes={}
 #   Runs the required queries to create the knowledge object and then re-owns them to the correct user
 #
 ###########################
-def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest, endpoint, actionResults, overrideAlways):
+def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest, endpoint, 
+                      actionResults, overrideAlways):
+    # Cache for users we've already checked/created
+    checked_users = set()
+
     for anInfo in infoList:
         sharing = anInfo["sharing"]
         owner = anInfo["owner"]
+        acl_info = anInfo.get("acl_info", {})  # Get stored ACL info
+
         if destOwner:
             owner = destOwner
+
+        # Check if owner exists on destination system and create if needed
+        if owner not in checked_users and owner != 'nobody':
+            # Extract host and port from splunk_rest_dest URL
+            dest_parts = splunk_rest_dest.replace('https://', '').replace('http://', '').split(':')
+            dest_host = dest_parts[0]
+            dest_port = dest_parts[1] if len(dest_parts) > 1 else '8089'
+
+            user_exists = check_and_create_user(
+                dest_host, dest_port, args.destAuthtype,
+                destUsername, destPassword, destToken, owner
+            )
+
+            if not user_exists:
+                logger.error(f"Cannot create or verify user '{owner}' on destination system")
+                appendToResults(actionResults, 'creationFailure', f"User creation failed for {anInfo['name']}")
+                continue
+
+            checked_users.add(owner)
 
         #We cannot post the sharing/owner information to the REST API, we use them later
         del anInfo["sharing"]
         del anInfo["owner"]
+        if "acl_info" in anInfo:
+            del anInfo["acl_info"]  # Remove ACL info from payload
 
         payload = anInfo
         name = anInfo["name"]
         curUpdated = anInfo["updated"]
         del anInfo["updated"]
 
-        url = "%s/servicesNS/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint)
+        url = f"{splunk_rest_dest}/servicesNS/{owner}/{app}/{endpoint}"
         objURL = None
         origName = None
+        encoded_name = urllib.parse.quote(name.encode('utf-8'))
+        encoded_name = encoded_name.replace("/", "%2F")
+
         if 'origName' in anInfo:
             origName = anInfo['origName']
             del anInfo['origName']
-            encoded_name = six.moves.urllib.parse.quote(origName.encode('utf-8'))
-            encoded_name = encoded_name.replace("/", "%2F")
-            origName = encoded_name
-            logger.debug("%s of type %s overriding name from %s to %s due to origName existing in config dictionary" % (name, type, name, encoded_name))
-            objURL = "%s/servicesNS/-/%s/%s/%s?output_mode=json" % (splunk_rest_dest, app, endpoint, encoded_name)
+            logger.debug(
+                f"{name} of type {type} overriding name from {name} to {origName} "
+                f"due to origName existing in config dictionary"
+            )
+            objURL = f"{splunk_rest_dest}/servicesNS/-/{app}/{endpoint}/{origName}?output_mode=json"
         else:
-            encoded_name = six.moves.urllib.parse.quote(name.encode('utf-8'))
-            encoded_name = encoded_name.replace("/", "%2F")
-            #datamodels do not allow /-/ (or private / user level sharing, only app level)
+            # datamodels do not allow /-/ (or private / user level sharing, only app level)
             if type == "datamodels":
-                objURL = "%s/servicesNS/%s/%s/%s/%s?output_mode=json" % (splunk_rest_dest, owner, app, endpoint, encoded_name)
+                objURL = (
+                    f"{splunk_rest_dest}/servicesNS/{owner}/{app}/{endpoint}/"
+                    f"{encoded_name}?output_mode=json"
+                )
             else:
-                objURL = "%s/servicesNS/-/%s/%s/%s?output_mode=json" % (splunk_rest_dest, app, endpoint, encoded_name)
-        logger.debug("%s of type %s checking on URL %s to see if it exists" % (name, type, objURL))
-        #Verify=false is hardcoded to workaround local SSL issues
-        res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)
+                objURL = (
+                    f"{splunk_rest_dest}/servicesNS/-/{app}/{endpoint}/"
+                    f"{encoded_name}?output_mode=json"
+                )
+        logger.debug(f"{name} of type {type} checking on URL {objURL} to see if it exists")
+
+        # Verify=false is hardcoded to workaround local SSL issues
+        res = make_request(
+            objURL, method='get', auth_type=args.destAuthtype, username=destUsername,
+            password=destPassword, token=args.destToken, verify=False
+        )
         objExists = False
         updated = None
         createdInAppContext = False
 
-        #If we get 404 it definitely does not exist
+        # If we get 404 it definitely does not exist
         if (res.status_code == 404):
-            logger.debug("URL %s is throwing a 404, assuming new object creation" % (objURL))
+            logger.debug(f"URL {objURL} is throwing a 404, assuming new object creation")
         elif (res.status_code != requests.codes.ok):
-            logger.error("URL %s in app %s status code %s reason %s, response: '%s'" % (objURL, app, res.status_code, res.reason, res.text))
+            logger.error(
+                f"URL {objURL} in app {app} status code {res.status_code} "
+                f"reason {res.reason}, response: '{res.text}'"
+            )
         else:
-            #However the fact that we did not get a 404 does not mean it exists in the context we expect it to, perhaps it's global and from another app context?
-            #or perhaps it's app level but we're restoring a private object...
-            logger.debug("Attempting to JSON loads on %s" % (res.text))
+            # However, the fact that we did not get a 404 does not mean it exists
+            # in the context we expect it to. Perhaps it's global and from another app context?
+            # Or perhaps it's app level but we're restoring a private object...
+            logger.debug(f"Attempting to JSON loads on {res.text}")
             resDict = json.loads(res.text)
             for entry in resDict['entry']:
                 sharingLevel = entry['acl']['sharing']
@@ -477,87 +1095,158 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 updatedStr = entry['updated']
                 remoteObjOwner = entry['acl']['owner']
                 updated = determineTime(updatedStr, name, app, type)
-                if appContext == app and (sharing == 'app' or sharing=='global') and (sharingLevel == 'app' or sharingLevel == 'global'):
+
+                if (appContext == app and (sharing == 'app' or sharing == 'global') and
+                        (sharingLevel == 'app' or sharingLevel == 'global')):
                     objExists = True
-                    logger.debug("name %s of type %s in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, type, app, objURL, sharingLevel, updated))
-                elif appContext == app and sharing == 'user' and sharingLevel == "user" and remoteObjOwner == owner:
+                    logger.debug(
+                        f"name {name} of type {type} in app context {app} found to "
+                        f"exist on url {objURL} with sharing of {sharingLevel}, "
+                        f"updated time of {updated}"
+                    )
+                elif (appContext == app and sharing == 'user' and
+                    sharingLevel == "user" and remoteObjOwner == owner):
                     objExists = True
-                    logger.debug("name %s of type %s in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, type, app, objURL, sharingLevel, updated))
-                elif appContext == app and sharingLevel == "user" and remoteObjOwner == owner and (sharing == "app" or sharing == "global"):
-                    logger.debug("name %s of type %s in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, type, app, objURL, sharingLevel, updated))
+                    logger.debug(
+                        f"name {name} of type {type} in app context {app} found to "
+                        f"exist on url {objURL} with sharing of {sharingLevel}, "
+                        f"updated time of {updated}"
+                    )
+                elif (appContext == app and sharingLevel == "user" and
+                    remoteObjOwner == owner and (sharing == "app" or sharing == "global")):
+                    logger.debug(
+                        f"name {name} of type {type} in app context {app} found to "
+                        f"exist on url {objURL} with sharing of {sharingLevel}, "
+                        f"updated time of {updated}"
+                    )
                 else:
-                    logger.debug("name %s of type %s in app context %s, found the object with this name in sharingLevel %s and appContext %s, updated time of %s" % (name, type, app, sharingLevel, appContext, updated))
+                    logger.debug(
+                        f"name {name} of type {type} in app context {app}, found the "
+                        f"object with this name in sharingLevel {sharingLevel} and "
+                        f"appContext {appContext}, updated time of {updated}, url {objURL}"
+                    )        
+
         #Hack to handle the times (conf-times) not including required attributes for creation in existing entries
         #not sure how this happens but it fails to create in 7.0.5 but works fine in 7.2.x, fixing for the older versions
-        if type=="times (conf-times)" and "is_sub_menu" not in payload:
+        if type == "times (conf-times)" and "is_sub_menu" not in payload:
             payload["is_sub_menu"] = "0"
 
-        if sharing == 'app' or sharing=='global':
-            url = "%s/servicesNS/nobody/%s/%s" % (splunk_rest_dest, app, endpoint)
-            logger.info("name %s of type %s in app context %s, sharing level is non-user so creating with nobody context updated url is %s" % (name, type, app, url))
+        if sharing == 'app' or sharing == 'global':
+            url = f"{splunk_rest_dest}/servicesNS/nobody/{app}/{endpoint}"
+            logger.info(
+                f"name {name} of type {type} in app context {app}, sharing level is "
+                f"non-user so creating with nobody context updated url is {url}"
+            )
             createdInAppContext = True
 
         deletionURL = None
-        if objExists == False:
-            logger.debug("Attempting to create %s with name %s on URL %s with payload '%s' in app %s" % (type, name, url, payload, app))
-            res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+        if objExists is False:
+            logger.debug(
+                f"Attempting to create {type} with name {name} on URL {url} with "
+                f"payload '{payload}' in app {app}"
+            )
+            res = make_request(
+                url, method='post', auth_type=args.destAuthtype, username=destUsername,
+                password=destPassword, token=args.destToken, data=payload, verify=False
+            )
             if (res.status_code != requests.codes.ok and res.status_code != 201):
-                logger.error("%s of type %s with URL %s status code %s reason %s, response '%s', in app %s, owner %s" % (name, type, url, res.status_code, res.reason, res.text, app, owner))
+                logger.error(
+                    f"{name} of type {type} with URL {url} status code {res.status_code} "
+                    f"reason {res.reason}, response '{res.text}', in app {app}, owner {owner}"
+                )
                 appendToResults(actionResults, 'creationFailure', name)
                 continue
             else:
-                logger.debug("%s of type %s in app %s with URL %s result is: '%s' owner of %s" % (name, type, app, url, res.text, owner))
+                logger.debug(
+                    f"{name} of type {type} in app {app} with URL {url} result is: "
+                    f"'{res.text}' owner of {owner}"
+                )
 
-            #Parse the result to find the new URL to use
+            # Parse the result to find the new URL to use
             root = ET.fromstring(res.text)
-            infoList = []
+            infoList = [] # This variable assignment seems to clear infoList, ensure this is intended.
 
             creationSuccessRes = False
             for child in root:
-                #Working per entry in the results
+                # Working per entry in the results
                 if child.tag.endswith("entry"):
-                    #Down to each entry level
+                    # Down to each entry level
                     for innerChild in child:
-                        #print innerChild.tag
-                        if innerChild.tag.endswith("link") and innerChild.attrib["rel"]=="list":
-                            deletionURL = "%s/%s" % (splunk_rest_dest, innerChild.attrib["href"])
-                            logger.debug("%s of type %s in app %s recording deletion URL as %s" % (name, type, app, deletionURL))
+                        # print innerChild.tag
+                        if innerChild.tag.endswith("link") and innerChild.attrib["rel"] == "list":
+                            deletionURL = f"{splunk_rest_dest}/{innerChild.attrib['href']}"
+                            logger.debug(
+                                f"{name} of type {type} in app {app} recording deletion "
+                                f"URL as {deletionURL}"
+                            )
                             appendToResults(actionResults, 'creationSuccess', deletionURL)
                             creationSuccessRes = True
                 elif child.tag.endswith("messages"):
                     for innerChild in child:
-                        if innerChild.tag.endswith("msg") and innerChild.attrib["type"]=="ERROR" or "WARN" in innerChild.attrib:
-                            logger.warning("%s of type %s in app %s had a warn/error message of '%s' owner of %s" % (name, type, app, innerChild.text, owner))
-                            #Sometimes the object appears to be create but is unusable which is annoying, at least provide the warning to the logs
-                            #and record it in the failure list for investigation
+                        if (innerChild.tag.endswith("msg") and
+                                (innerChild.attrib["type"] == "ERROR" or "WARN" in innerChild.attrib)):
+                            logger.warning(
+                                f"{name} of type {type} in app {app} had a warn/error "
+                                f"message of '{innerChild.text}' owner of {owner}"
+                            )
+                            # Sometimes the object appears to be created but is unusable,
+                            # which is annoying. At least provide the warning to the logs
+                            # and record it in the failure list for investigation.
                             appendToResults(actionResults, 'creationFailure', name)
             if not deletionURL:
-                logger.warning("%s of type %s in app %s did not appear to create correctly, will not attempt to change the ACL of this item" % (name, type, app))
+                logger.warning(
+                    f"{name} of type {type} in app {app} did not appear to create "
+                    f"correctly, will not attempt to change the ACL of this item"
+                )
                 continue
-            #Re-owning it to the previous owner
-            url = "%s/acl" % (deletionURL)
-            payload = { "owner": owner, "sharing" : sharing }
-            logger.info("Attempting to change ownership of %s with name %s via URL %s to owner %s in app %s with sharing %s" % (type, name, url, owner, app, sharing))
-            res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+            # Re-owning it to the previous owner
+            url = f"{deletionURL}/acl"
+            payload = {"owner": owner, "sharing": sharing}
+            logger.info(
+                f"Attempting to change ownership of {type} with name {name} via URL {url} "
+                f"to owner {owner} in app {app} with sharing {sharing}"
+            )
+            res = make_request(
+                url, method='post', auth_type=args.destAuthtype, username=destUsername,
+                password=destPassword, token=args.destToken, data=payload, verify=False
+            )
 
-            #If re-own fails consider this a failure that requires investigation
+            # If re-own fails consider this a failure that requires investigation
             if (res.status_code != requests.codes.ok):
-                logger.error("%s of type %s in app %s with URL %s status code %s reason %s, response '%s', owner of %s" % (name, type, app, url, res.status_code, res.reason, res.text, owner))
+                logger.error(
+                    f"{name} of type {type} in app {app} with URL {url} status code "
+                    f"{res.status_code} reason {res.reason}, response '{res.text}', "
+                    f"owner of {owner}"
+                )
                 appendToResults(actionResults, 'creationFailure', name)
                 if res.status_code == 409:
                     if type == "eventtypes":
-                        logger.warning("Received a 409 while changing the ACL permissions of %s of type %s in app %s with URL %s, however eventtypes throw this error and work anyway. Ignoring!" % (name, type, app, url))
+                        logger.warning(
+                            f"Received a 409 while changing the ACL permissions of {name} "
+                            f"of type {type} in app {app} with URL {url}, however "
+                            f"eventtypes throw this error and work anyway. Ignoring!"
+                        )
                         continue
-                    #Delete the duplicate private object rather than leave it there for no reason
+                    # Delete the duplicate private object rather than leave it there for no reason
                     url = url[:-4]
-                    logger.warning("Deleting the private object as it could not be re-owned %s of type %s in app %s with URL %s" % (name, type, app, url))
-                    requests.delete(url, auth=(destUsername,destPassword), verify=False)
-                    #If we previously recorded success, remove that entry
+                    logger.warning(
+                        f"Deleting the private object as it could not be re-owned {name} "
+                        f"of type {type} in app {app} with URL {url}"
+                    )
+                    make_request(
+                        url, method='delete', auth_type=args.destAuthtype,
+                        username=destUsername, password=destPassword,
+                        token=args.destToken, verify=False
+                    )
+                    # If we previously recorded success, remove that entry
                     if creationSuccessRes:
                         popLastResult(actionResults, 'creationSuccess')
                 continue
             else:
-                logger.debug("%s of type %s in app %s, ownership changed with response: %s, will update deletion URL, owner %s, sharing level %s" % (name, type, app, res.text, owner, sharing))
+                logger.debug(
+                    f"{name} of type {type} in app {app}, ownership changed. Response: "
+                    f"{res.text}. Will update deletion URL. Owner: {owner}, Sharing: {sharing}"
+                )
 
                 #Parse the return response
                 root = ET.fromstring(res.text)
@@ -568,118 +1257,165 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                         #Down to each entry level
                         for innerChild in child:
                             if innerChild.tag.endswith("link") and innerChild.attrib["rel"]=="list":
-                                deletionURL = "%s/%s" % (splunk_rest_dest, innerChild.attrib["href"])
-                                logger.debug("%s of type %s in app %s recording new deletion URL as %s , owner is %s and sharing level %s" % (name, type, app, deletionURL, owner, sharing))
+                                deletionURL = f"{splunk_rest_dest}/{innerChild.attrib['href']}"
+                                logger.debug(
+                                    f"{name} of type {type} in app {app} recording new deletion URL: {deletionURL}. "
+                                    f"Owner: {owner}, Sharing: {sharing}"
+                                )
                                 #Remove our last recorded URL
-                                #logger.debug("action results is %s" % (actionResults))
                                 popLastResult(actionResults, 'creationSuccess')
                                 appendToResults(actionResults, 'creationSuccess', deletionURL)
-                                #logger.debug("action results is %s" % (actionResults))
             if creationSuccessRes:
-                logger.info("Created %s of type %s in app %s owner is %s sharing level %s" % (name, type, app, owner, sharing))
+                logger.info(
+                    f"Created {name} of type {type} in app {app}. Owner: {owner}, Sharing: {sharing}"
+                )
             else:
-                logger.warning("Atempted to create %s of type %s in app %s owner is %s sharing level %s but failed" % (name, type, app, owner, sharing))
+                logger.warning(
+                    f"Attempted to create {name} of type {type} in app {app} (Owner: {owner}, Sharing: {sharing}) "
+                    f"but failed"
+                )
         else:
-            #object exists already
+            # object exists already
             if override or overrideAlways:
-                #If the override flag is on and the curUpdated attribute is older than the remote updated attribute
-                #then do not continue with the override
-                #if we have overrideAlways we blindly overwrite
-                if override and curUpdated < updated:
-                    logger.info("%s of type %s in app %s with URL %s, owner %s, source object says time of %s, destination object says time of %s, skipping this entry" % (name, type, app, objURL, owner, curUpdated, updated))
+                # If the override flag is on and the curUpdated attribute is older than the remote updated attribute,
+                # then do not continue with the override. If we have overrideAlways we blindly overwrite.
+                if override and curUpdated <= updated:
+                    logger.info(
+                        f"{name} of type {type} in app {app} with URL {objURL}, owner {owner}, "
+                        f"source object says time of {curUpdated}, destination object says time of "
+                        f"{updated}, skipping this entry"
+                    )
                     appendToResults(actionResults, 'creationSkip', objURL)
                     continue
                 else:
-                    logger.info("%s of type %s in app %s with URL %s, owner %s, source object says time of %s, destination object says time of %s, will update this entry" % (name, type, app, objURL, owner, curUpdated, updated))
+                    logger.info(
+                        f"{name} of type {type} in app {app} with URL {objURL}, owner {owner}, "
+                        f"source object says time of {curUpdated}, destination object says time of "
+                        f"{updated}, will update this entry"
+                    )
                 url = objURL
 
-                #If we're user level we want to update using the user endpoint
-                #If it's app/global we update using the nobody to ensure we're updating the app level object
-                urlName = None
-                if origName:
-                    urlName = origName
-                else:
-                    urlName = encoded_name
+                # If we're user level we want to update using the user endpoint
+                # If it's app/global we update using the nobody to ensure we're updating the app level object
+                urlName = origName if origName else encoded_name
 
                 if sharing == "user":
-                    url = "%s/servicesNS/%s/%s/%s/%s" % (splunk_rest_dest, owner, app, endpoint, urlName)
+                    url = f"{splunk_rest_dest}/servicesNS/{owner}/{app}/{endpoint}/{urlName}"
                 else:
-                    url = "%s/servicesNS/nobody/%s/%s/%s" % (splunk_rest_dest, app, endpoint, urlName)
+                    url = f"{splunk_rest_dest}/servicesNS/nobody/{app}/{endpoint}/{urlName}"
 
-                #Cannot post type/stanza when updating field extractions or a few other object types, but require them for creation?!
+                # Cannot post type/stanza when updating field extractions or a few other object types,
+                # but require them for creation?!
                 if 'type' in payload:
                     del payload['type']
                 if 'stanza' in payload:
                     del payload['stanza']
 
-                #Remove the name from the payload
+                # Remove the name from the payload
                 del payload['name']
-                logger.debug("Attempting to update %s with name %s on URL %s with payload '%s' in app %s" % (type, name, url, payload, app))
-                res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
-                if (res.status_code != requests.codes.ok and res.status_code != 201):
-                    logger.error("%s of type %s with URL %s status code %s reason %s, response '%s', in app %s, owner %s" % (name, type, url, res.status_code, res.reason, res.text, app, owner))
+                logger.debug(
+                    f"Attempting to update {type} with name {name} on URL {url} with "
+                    f"payload '{payload}' in app {app}"
+                )
+                res = make_request(
+                    url, method='post', auth_type=args.destAuthtype, username=destUsername,
+                    password=destPassword, token=args.destToken, data=payload, verify=False
+                )
+                if res.status_code != requests.codes.ok and res.status_code != 201:
+                    logger.error(
+                        f"{name} of type {type} with URL {url} status code {res.status_code} "
+                        f"reason {res.reason}, response '{res.text}', in app {app}, owner {owner}"
+                    )
                     appendToResults(actionResults, 'updateFailure', name)
                 else:
-                    logger.debug("Post-update of %s of type %s in app %s with URL %s result is: '%s' owner of %s" % (name, type, app, url, res.text, owner))
+                    logger.debug(
+                        f"Post-update of {name} of type {type} in app {app} with URL {url} "
+                        f"result is: '{res.text}' owner of {owner}"
+                    )
                     appendToResults(actionResults, 'updateSuccess', name)
 
-                #Re-owning it to the previous owner
+                # Re-owning it to the previous owner
                 if sharing != "user":
-                    url = "%s/acl" % (url)
-                    payload = { "owner": owner, "sharing" : sharing }
-                    logger.info("App or Global sharing in use, attempting to change ownership of %s with name %s via URL %s to owner %s in app %s with sharing %s" % (type, name, url, owner, app, sharing))
-                    res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+                    url = f"{url}/acl"
+                    payload = {"owner": owner, "sharing": sharing}
+                    logger.info(
+                        f"App or Global sharing in use, attempting to change ownership of "
+                        f"{type} with name {name} via URL {url} to owner {owner} in app "
+                        f"{app} with sharing {sharing}"
+                    )
+                    res = make_request(
+                        url, method='post', auth_type=args.destAuthtype, username=destUsername,
+                        password=destPassword, token=args.destToken, data=payload, verify=False
+                    )
             else:
                 appendToResults(actionResults, 'creationSkip', objURL)
-                logger.info("%s of type %s in app %s owner of %s, object already exists and override is not set, nothing to do here" % (name, type, app, owner))
+                logger.info(
+                    f"{name} of type {type} in app {app} owner of {owner}, object already "
+                    f"exists and override is not set, nothing to do here"
+                )
 
 ###########################
 #
 # macros
 #
 ###########################
-#macro use cases are slightly different to everything else on the REST API
-#enough that this code has not been integrated into the runQuery() function
-def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, macroResults):
+# macro use cases are slightly different to everything else on the REST API
+# enough that this code has not been integrated into the runQuery() function
+def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner,
+           excludeOwner, privateOnly, override, overrideAlways, macroResults):
     macros = {}
-    #servicesNS/-/-/properties/macros doesn't show private macros so using /configs/conf-macros to find all the macros
-    #again with count=-1 to find all the available macros
-    url = splunk_rest + "/servicesNS/-/" + app + "/configs/conf-macros?count=-1"
-    logger.debug("Running requests.get() on %s with username %s in app %s for type macro" % (url, srcUsername, app))
-    res = requests.get(url, auth=(srcUsername, srcPassword), verify=False)
-    if (res.status_code != requests.codes.ok):
-        logger.error("Type macro in app %s, URL %s status code %s reason %s, response '%s'" % (app, url, res.status_code, res.reason, res.text))
+    # servicesNS/-/-/properties/macros doesn't show private macros so using /configs/conf-macros to find all the macros
+    # again with count=-1 to find all the available macros
+    url = f"{splunk_rest}/servicesNS/-/{app}/configs/conf-macros?count=-1"
+    logger.debug(
+        f"Running requests.get() on {url} with username {srcUsername} in app {app} for type macro"
+    )
+    res = make_request(
+        url, method='get', auth_type=args.srcAuthtype, username=srcUsername,
+        password=srcPassword, token=args.srcToken, verify=False
+    )
+    if res.status_code != requests.codes.ok:
+        logger.error(
+            f"Type macro in app {app}, URL {url} status code {res.status_code} reason {res.reason}, "
+            f"response '{res.text}'"
+        )
 
-    #Parse the XML tree
+    # Parse the XML tree
     root = ET.fromstring(res.text)
 
     for child in root:
-        #Working per entry in the results
+        # Working per entry in the results
         if child.tag.endswith("entry"):
-            #Down to each entry level
+            # Down to each entry level
             macroInfo = {}
             keep = True
             for innerChild in child:
-                #title is the name
+                # title is the name
                 if innerChild.tag.endswith("title"):
                     title = innerChild.text
                     macroInfo["name"] = title
-                    logger.debug("Found macro title/name: %s in app %s" % (title, app))
-                    #Deal with the include/exclude lists
+                    logger.debug(f"Found macro title/name: {title} in app {app}")
+                    # Deal with the include/exclude lists
                     if includeEntities:
-                        if not title in includeEntities:
-                            logger.debug("%s of type macro not in includeEntities list in app %s" % (title, app))
+                        if title not in includeEntities:
+                            logger.debug(
+                                f"{title} of type macro not in includeEntities list in app {app}"
+                            )
                             keep = False
                             break
                     if excludeEntities:
                         if title in excludeEntities:
-                            logger.debug("%s of type macro in excludeEntities list in app %s" % (title, app))
+                            logger.debug(
+                                f"{title} of type macro in excludeEntities list in app {app}"
+                            )
                             keep = False
                             break
 
                     if args.nameFilter:
                         if not nameFilter.search(title):
-                            logger.debug("%s of type macro does not match regex in app %s" % (title, app))
+                            logger.debug(
+                                f"{title} of type macro does not match regex in app {app}"
+                            )
                             keep = False
                             break
 
@@ -687,94 +1423,166 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
                     updatedStr = innerChild.text
                     updated = determineTime(updatedStr, macroInfo["name"], app, "macro")
                     macroInfo['updated'] = updated
-                    logger.debug("name %s, of type macro in app %s was updated on %s" % (title, app, updated))
-                #Content apepars to be where 90% of the data we want is located
+                    logger.debug(
+                        f"name {title}, of type macro in app {app} was updated on {updated}"
+                    )
+                # Content appears to be where 90% of the data we want is located
                 elif innerChild.tag.endswith("content"):
                     for theAttribute in innerChild[0]:
-                        #acl has the owner, sharing and app level which we required (sometimes there is eai:app but it's not 100% consistent so this is safer
-                        #also have switched from author to owner as it's likely the safer option...
+                        # acl has the owner, sharing and app level which we required
+                        # (sometimes there is eai:app but it's not 100% consistent so this is
+                        # safer also have switched from author to owner as it's likely the
+                        # safer option...)
                         if theAttribute.attrib['name'] == 'eai:acl':
                             for theList in theAttribute[0]:
                                 if theList.attrib['name'] == 'sharing':
-                                    logger.debug("%s of type macro sharing: %s in app %s" % (macroInfo["name"], theList.text, app))
+                                    logger.debug(
+                                        f"{macroInfo['name']} of type macro sharing: "
+                                        f"{theList.text} in app {app}"
+                                    )
                                     macroInfo["sharing"] = theList.text
 
-                                    #If we are excluding private then check the sharing is not user level (private in the GUI)
+                                    # If we are excluding private then check the sharing is
+                                    # not user level (private in the GUI)
                                     if noPrivate and macroInfo["sharing"] == "user":
-                                        logger.debug("%s of type macro found but the noPrivate flag is true, excluding this in app %s" % (macroInfo["name"], app))
+                                        logger.debug(
+                                            f"{macroInfo['name']} of type macro found but "
+                                            f"the noPrivate flag is true, excluding this "
+                                            f"in app {app}"
+                                        )
                                         keep = False
                                         break
                                     elif privateOnly and macroInfo["sharing"] != "user":
-                                        logger.debug("%s of type macro found but the privateOnly flag is true and sharing is %s, excluding this in app %s" % (macroInfo["name"], macroInfo["sharing"], app))
+                                        logger.debug(
+                                            f"{macroInfo['name']} of type macro found but "
+                                            f"the privateOnly flag is true and sharing is "
+                                            f"{macroInfo['sharing']}, excluding this in "
+                                            f"app {app}"
+                                        )
                                         keep = False
                                         break
 
-                                    if args.sharingFilter and not args.sharingFilter == info["sharing"]:
-                                        logger.debug("%s of type macro found but the sharing level is set to %s and this object has sharing %s excluding this in app %s" % (macroInfo["name"], args.sharingFilter, macroInfo["sharing"], app))
+                                    if (
+                                        args.sharingFilter
+                                        and not args.sharingFilter == macroInfo["sharing"]
+                                    ):
+                                        logger.debug(
+                                            f"{macroInfo['name']} of type macro found but "
+                                            f"the sharing level is set to {args.sharingFilter} "
+                                            f"and this object has sharing {macroInfo['sharing']} "
+                                            f"excluding this in app {app}"
+                                        )
                                         keep = False
                                         break
 
                                 elif theList.attrib['name'] == 'app':
-                                    logger.debug("macro app: %s" % (theList.text))
+                                    logger.debug(f"macro app: {theList.text}")
                                     foundApp = theList.text
-                                    #We can see globally shared objects in our app context, it does not mean we should migrate them as it's not ours...
+                                    # We can see globally shared objects in our app context,
+                                    # it does not mean we should migrate them as it's not ours...
                                     if app != foundApp:
-                                        logger.debug("%s of type macro found in app context of %s, belongs to app context %s, excluding it" % (macroInfo["name"], app, foundApp))
+                                        logger.debug(
+                                            f"{macroInfo['name']} of type macro found in "
+                                            f"app context of {app}, belongs to app context "
+                                            f"{foundApp}, excluding it"
+                                        )
                                         keep = False
                                         break
-                                #owner is used as a nicer alternative to the author
+                                # owner is used as a nicer alternative to the author
                                 elif theList.attrib['name'] == 'owner':
                                     macroInfo["owner"] = theList.text
                                     owner = theList.text
-                                    logger.debug("%s of type macro owner is %s" % (macroInfo["name"], owner))
+                                    logger.debug(
+                                        f"{macroInfo['name']} of type macro owner is {owner}"
+                                    )
                                     if includeOwner:
-                                        if not owner in includeOwner:
-                                            logger.debug("%s of type macro with owner %s not in includeOwner list in app %s" % (macroInfo["name"], owner, app))
+                                        if owner not in includeOwner:
+                                            logger.debug(
+                                                f"{macroInfo['name']} of type macro with "
+                                                f"owner {owner} not in includeOwner list "
+                                                f"in app {app}"
+                                            )
                                             keep = False
                                             break
                                     if excludeOwner:
                                         if owner in excludeOwner:
-                                            logger.debug("%s of type macro with owner %s in excludeOwner list in app %s" % (macroInfo["name"], owner, app))
+                                            logger.debug(
+                                                f"{macroInfo['name']} of type macro with "
+                                                f"owner {owner} in excludeOwner list in "
+                                                f"app {app}"
+                                            )
                                             keep = False
                                             break
                         else:
-                            #We have other attributes under content, we want the majority of them
+                            # We have other attributes under content, we want the majority of them
                             attribName = theAttribute.attrib['name']
-                            #Check if we have hit hte disabled attribute and we have a noDisabled flag
-                            if attribName == "disabled" and noDisabled and theAttribute.text == "1":
-                                logger.debug("noDisabled flag is true, %s of type macro is disabled, excluded in app %s" % (theAttribute.attrib['name'], app))
+                            # Check if we have hit the disabled attribute and we have a noDisabled flag
+                            if (
+                                attribName == "disabled"
+                                and noDisabled
+                                and theAttribute.text == "1"
+                            ):
+                                logger.debug(
+                                    f"noDisabled flag is true, {theAttribute.attrib['name']} "
+                                    f"of type macro is disabled, excluded in app {app}"
+                                )
                                 keep = False
                                 break
                             else:
-                                #Otherwise we want this attribute
+                                # Otherwise we want this attribute
                                 attribName = theAttribute.attrib['name']
-                                #Some attributes do not work with the REST API or should not be migrated...
-                                logger.debug("%s of type macro key/value pair of %s=%s in app %s" % (macroInfo["name"], attribName, theAttribute.text, app))
+                                # Some attributes do not work with the REST API or should not be migrated...
+                                logger.debug(
+                                    f"{macroInfo['name']} of type macro key/value pair of "
+                                    f"{attribName}={theAttribute.text} in app {app}"
+                                )
                                 macroInfo[attribName] = theAttribute.text
             if keep:
 
-                #Add this to the infoList
+                # Add this to the infoList
                 sharing = macroInfo["sharing"]
                 if sharing not in macros:
                     macros[sharing] = []
                 macros[sharing].append(macroInfo)
-                logger.info("Recording macro info for %s in app %s with owner %s sharing level of %s" % (macroInfo["name"], app, macroInfo["owner"], macroInfo["sharing"]))
+                logger.info(
+                    f"Recording macro info for {macroInfo['name']} in app {app} with "
+                    f"owner {macroInfo['owner']} sharing level of {macroInfo['sharing']}"
+                )
 
     app = destApp
 
-    #Cycle through each one we need to migrate, we do globa/app/user as users can duplicate app level objects with the same names
-    #but we create everything at user level first then re-own it so global/app must happen first
+    # Cycle through each one we need to migrate. We process global/app/user
+    # as users can duplicate app level objects with the same names, but we create
+    # everything at user level first then re-own it, so global/app must happen first.
     if "global" in macros:
-        logger.debug("Now running macroCreation with knowledge objects of type macro with global level sharing in app %s" % (app))
-        macroCreation(macros["global"], destOwner, app, splunk_rest_dest, macroResults, override, overrideAlways)
+        logger.debug(
+            f"Now running macroCreation with knowledge objects of type macro with "
+            f"global level sharing in app {app}"
+        )
+        macroCreation(
+            macros["global"], destOwner, app, splunk_rest_dest,
+            macroResults, override, overrideAlways
+        )
 
     if "app" in macros:
-        logger.debug("Now running macroCreation with knowledge objects of type macro with app level sharing in app %s" % (app))
-        macroCreation(macros["app"], destOwner, app, splunk_rest_dest, macroResults, override, overrideAlways)
+        logger.debug(
+            f"Now running macroCreation with knowledge objects of type macro with "
+            f"app level sharing in app {app}"
+        )
+        macroCreation(
+            macros["app"], destOwner, app, splunk_rest_dest,
+            macroResults, override, overrideAlways
+        )
 
     if "user" in macros:
-        logger.debug("Now running macroCreation with knowledge objects of type macro with user (private) level sharing in app %s" % (app))
-        macroCreation(macros["user"], destOwner, app, splunk_rest_dest, macroResults, override, overrideAlways)
+        logger.debug(
+            f"Now running macroCreation with knowledge objects of type macro with "
+            f"user (private) level sharing in app {app}"
+        )
+        macroCreation(
+            macros["user"], destOwner, app, splunk_rest_dest,
+            macroResults, override, overrideAlways
+        )
 
     return macroResults
 
@@ -786,6 +1594,9 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
 ###########################
 
 def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, override, overrideAlways):
+    # Cache for users we've already checked/created
+    checked_users = set()
+
     for aMacro in macros:
         sharing = aMacro["sharing"]
         name = aMacro["name"]
@@ -796,26 +1607,57 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         if destOwner:
             owner = destOwner
 
-        url = "%s/servicesNS/%s/%s/properties/macros" % (splunk_rest_dest, owner, app)
+        # Check if owner exists on destination system and create if needed
+        if owner not in checked_users and owner != 'nobody':
+            # Extract host and port from splunk_rest_dest URL
+            dest_parts = splunk_rest_dest.replace('https://', '').replace('http://', '').split(':')
+            dest_host = dest_parts[0]
+            dest_port = dest_parts[1] if len(dest_parts) > 1 else '8089'
 
-        encoded_name = six.moves.urllib.parse.quote(name.encode('utf-8'))
+            user_exists = check_and_create_user(
+                dest_host, dest_port, args.destAuthtype,
+                destUsername, destPassword, destToken, owner
+            )
+
+            if not user_exists:
+                logger.error(f"Cannot create or verify user '{owner}' on destination system")
+                appendToResults(macroResults, 'creationFailure', f"User creation failed for {name}")
+                continue
+
+            checked_users.add(owner)
+
+        url = f"{splunk_rest_dest}/servicesNS/{owner}/{app}/properties/macros"
+
+        encoded_name = urllib.parse.quote(name.encode('utf-8'))
         encoded_name = encoded_name.replace("/", "%2F")
-        objURL = "%s/servicesNS/-/%s/configs/conf-macros/%s?output_mode=json" % (splunk_rest_dest, app, encoded_name)
-        #Verify=false is hardcoded to workaround local SSL issues
-        res = requests.get(objURL, auth=(destUsername,destPassword), verify=False)
-        logger.debug("%s of type macro checking on URL %s to see if it exists" % (name, objURL))
+        objURL = (
+            f"{splunk_rest_dest}/servicesNS/-/{app}/configs/conf-macros/"
+            f"{encoded_name}?output_mode=json"
+        )
+        # Verify=false is hardcoded to workaround local SSL issues
+        res = make_request(
+            objURL, method='get', auth_type=args.destAuthtype, username=destUsername,
+            password=destPassword, token=args.destToken, verify=False
+        )
+        logger.debug(
+            f"{name} of type macro checking on URL {objURL} to see if it exists"
+        )
         objExists = False
         updated = None
         createdInAppContext = False
-        #If we get 404 it definitely does not exist
+        # If we get 404 it definitely does not exist
         if (res.status_code == 404):
-            logger.debug("URL %s is throwing a 404, assuming new object creation" % (objURL))
+            logger.debug(f"URL {objURL} is throwing a 404, assuming new object creation")
         elif (res.status_code != requests.codes.ok):
-            logger.error("URL %s in app %s status code %s reason %s, response: '%s'" % (objURL, app, res.status_code, res.reason, res.text))
+            logger.error(
+                f"URL {objURL} in app {app} status code {res.status_code} "
+                f"reason {res.reason}, response: '{res.text}'"
+            )
         else:
-            #However the fact that we did not get a 404 does not mean it exists in the context we expect it to, perhaps it's global and from another app context?
-            #or perhaps it's app level but we're restoring a private object...
-            logger.debug("Attempting to JSON loads on %s" % (res.text))
+            # However the fact that we did not get a 404 does not mean it exists
+            # in the context we expect it to, perhaps it's global and from another app context?
+            # or perhaps it's app level but we're restoring a private object...
+            logger.debug(f"Attempting to JSON loads on {res.text}")
             resDict = json.loads(res.text)
             for entry in resDict['entry']:
                 sharingLevel = entry['acl']['sharing']
@@ -823,131 +1665,238 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
                 updatedStr = entry['updated']
                 updated = determineTime(updatedStr, name, app, "macro")
                 remoteObjOwner = entry['acl']['owner']
-                logger.info("sharing level %s, app context %s, remoteObjOnwer %s, app %s" % (sharing, appContext, remoteObjOwner, app))
-                if appContext == app and (sharing == 'app' or sharing=='global') and (sharingLevel == 'app' or sharingLevel == 'global'):
+                logger.info(
+                    f"sharing level {sharing}, app context {appContext}, "
+                    f"remoteObjOwner {remoteObjOwner}, app {app}"
+                )
+                if appContext == app and (sharing == 'app' or sharing == 'global') and \
+                   (sharingLevel == 'app' or sharingLevel == 'global'):
                     objExists = True
-                    logger.debug("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, app, objURL, sharingLevel, updated))
-                elif appContext == app and sharing == 'user' and sharingLevel == "user" and remoteObjOwner == owner:
+                    logger.debug(
+                        f"name {name} of type macro in app context {app} found to "
+                        f"exist on url {objURL} with sharing of {sharingLevel}, "
+                        f"updated time of {updated}"
+                    )
+                elif appContext == app and sharing == 'user' and \
+                     sharingLevel == "user" and remoteObjOwner == owner:
                     objExists = True
-                    logger.debug("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, app, objURL, sharingLevel, updated))
-                elif appContext == app and sharingLevel == "user" and remoteObjOwner == owner and (sharing == "app" or sharing == "global"):
-                    logger.debug("name %s of type macro in app context %s found to exist on url %s with sharing of %s, updated time of %s" % (name, app, objURL, sharingLevel, updated))
+                    logger.debug(
+                        f"name {name} of type macro in app context {app} found to "
+                        f"exist on url {objURL} with sharing of {sharingLevel}, "
+                        f"updated time of {updated}"
+                    )
+                elif appContext == app and sharingLevel == "user" and \
+                     remoteObjOwner == owner and (sharing == "app" or sharing == "global"):
+                    logger.debug(
+                        f"name {name} of type macro in app context {app} found to "
+                        f"exist on url {objURL} with sharing of {sharingLevel}, "
+                        f"updated time of {updated}"
+                    )
                 else:
-                    logger.debug("name %s of type macro in app context %s, found the object with this name in sharingLevel %s and appContext %s, updated time of %s, url %s" % (name, app, sharingLevel, appContext, updated, objURL))
-
-        if sharing == 'app' or sharing=='global':
-            url = "%s/servicesNS/nobody/%s/properties/macros" % (splunk_rest_dest, app)
-            logger.info("name %s of type macro in app context %s, sharing level is non-user so creating with nobody context updated url is %s" % (name, app, url))
-            createdInAppContext = True
-
-        if objExists == True and not (override or overrideAlways):
-            logger.info("%s of type macro in app %s on URL %s exists, however override/overrideAlways is not set so not changing this macro" % (name, app, objURL))
-            appendToResults(macroResults, 'creationSkip', objURL)
-            continue
-        elif objExists == True and override and not curUpdated > updated:
-            logger.info("%s of type macro in app %s on URL %s exists, override is set but the source copy has modification time of %s destination has time of %s, skipping" % (name, app, objURL, curUpdated, updated))
-            appendToResults(macroResults, 'creationSkip', objURL)
-            continue
+                    logger.debug(
+                        f"name {name} of type macro in app context {app}, found the "
+                        f"object with this name in sharingLevel {sharingLevel} and "
+                        f"appContext {appContext}, updated time of {updated}, url {objURL}"
+                    )
 
         createOrUpdate = None
-        if objExists == True:
+        if objExists and not (override or overrideAlways):
+            logger.info(
+                f"{name} of type macro in app {app} on URL {objURL} exists, however "
+                f"override/overrideAlways is not set so not changing this macro"
+            )
+            appendToResults(macroResults, 'creationSkip', objURL)
+            continue
+        elif objExists and override and not curUpdated > updated:
+            logger.info(
+                f"{name} of type macro in app {app} on URL {objURL} exists, "
+                f"override is set but the source copy has modification time of "
+                f"{curUpdated} destination has time of {updated}, skipping"
+            )
+            appendToResults(macroResults, 'creationSkip', objURL)
+            continue
+        elif objExists and overrideAlways:
+            logger.info(
+                f"{name} of type macro in app {app} on URL {objURL} exists, "
+                f"overrideAlways is set, will update this macro"
+            )
+
+        if objExists:
             createOrUpdate = "update"
             url = url + "/" + encoded_name
         else:
             createOrUpdate = "create"
 
-        logger.info("Attempting to %s macro %s on URL with name %s in app %s" % (createOrUpdate, name, url, app))
+        logger.info(
+            f"Attempting to {createOrUpdate} macro {name} on URL with name {url} "
+            f"in app {app}"
+        )
 
-        payload = { "__stanza" : name }
-        #Create macro
-        #I cannot seem to get this working on the /conf URL but this works so good enough, and it's in the REST API manual...
-        #servicesNS/-/search/properties/macros
-        #__stanza = <name>
+        payload = {"__stanza": name}
+        # Create macro
+        # I cannot seem to get this working on the /conf URL but this works so good enough,
+        # and it's in the REST API manual...
+        # servicesNS/-/search/properties/macros
+        # __stanza = <name>
         macroCreationSuccessRes = False
-        if objExists == False:
+        if not objExists:
             macroCreationSuccessRes = False
-            res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+            res = make_request(
+                url, method='post', auth_type=args.destAuthtype,
+                username=destUsername, password=destPassword,
+                token=args.destToken, data=payload, verify=False
+            )
             if (res.status_code != requests.codes.ok and res.status_code != 201):
-                logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s', owner %s" % (name, app, url, res.status_code, res.reason, res.text, owner))
+                logger.error(
+                    f"{name} of type macro in app {app} with URL {url} status code "
+                    f"{res.status_code} reason {res.reason}, response '{res.text}', "
+                    f"owner {owner}"
+                )
                 appendToResults(macroResults, 'creationFailure', name)
                 if res.status_code == 409:
-                    #Delete the duplicate private object rather than leave it there for no purpose
+                    # Delete the duplicate private object rather than leave it there for no purpose
                     url = url[:-4]
-                    logger.warning("Deleting the private object as it could not be re-owned %s of type macro in app %s with URL %s" % (name, app, url))
-                    requests.delete(url, auth=(destUsername,destPassword), verify=False)
+                    logger.warning(
+                        f"Deleting the private object as it could not be re-owned "
+                        f"{name} of type macro in app {app} with URL {url}"
+                    )
+                    make_request(
+                        url, method='delete', auth_type=args.destAuthtype,
+                        username=destUsername, password=destPassword,
+                        token=args.destToken, verify=False
+                    )
             else:
-                #Macros always delete with the username in this URL context
-                deletionURL = "%s/servicesNS/%s/%s/configs/conf-macros/%s" % (splunk_rest_dest, owner, app, name)
-                logger.debug("%s of type macro in app %s recording deletion URL as %s with owner %s" % (name, app, deletionURL, owner))
+                # Macros always delete with the username in this URL context
+                deletionURL = (
+                    f"{splunk_rest_dest}/servicesNS/{owner}/{app}/configs/"
+                    f"conf-macros/{name}"
+                )
+                logger.debug(
+                    f"{name} of type macro in app {app} recording deletion URL as "
+                    f"{deletionURL} with owner {owner}"
+                )
                 appendToResults(macroResults, 'creationSuccess', deletionURL)
                 macroCreationSuccessRes = True
 
-            logger.debug("%s of type macro in app %s, received response of: '%s'" % (name, app, res.text))
+            logger.debug(
+                f"{name} of type macro in app {app}, received response of: '{res.text}'"
+            )
 
         payload = {}
 
-        #Remove parts that cannot be posted to the REST API, sharing/owner we change later
+        # Remove parts that cannot be posted to the REST API, sharing/owner we change later
         del aMacro["sharing"]
         del aMacro["name"]
         del aMacro["owner"]
-        del aMacro["eai:appName"]
-        del aMacro["eai:userName"]
         payload = aMacro
 
         if createOrUpdate == "create":
             url = url + "/" + encoded_name
 
-        logger.debug("Attempting to modify macro %s on URL %s with payload '%s' in app %s" % (name, url, payload, app))
-        res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+        logger.debug(
+            f"Attempting to modify macro {name} on URL {url} with payload '{payload}' "
+            f"in app {app}"
+        )
+        res = make_request(
+            url, method='post', auth_type=args.destAuthtype, username=destUsername,
+            password=destPassword, token=args.destToken, data=payload, verify=False
+        )
         if (res.status_code != requests.codes.ok and res.status_code != 201):
-            logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s'" % (name, app, url, res.status_code, res.reason, res.text))
+            logger.error(
+                f"{name} of type macro in app {app} with URL {url} status code "
+                f"{res.status_code} reason {res.reason}, response '{res.text}'"
+            )
 
-            if objExists == False:
+            if not objExists:
                 appendToResults(macroResults, 'creationFailure', name)
                 popLastResult(macroResults, 'macroCreationSuccess')
-                logger.warning("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
-                requests.delete(url, auth=(destUsername,destPassword), verify=False)
+                logger.warning(
+                    f"Deleting the private object as it could not be modified {name} "
+                    f"of type macro in app {app} with URL {url}"
+                )
+                make_request(
+                    url, method='delete', auth_type=args.destAuthtype,
+                    username=destUsername, password=destPassword,
+                    token=args.destToken, verify=False
+                )
             else:
                 appendToResults(macroResults, 'updateFailure', name)
 
             macroCreationSuccessRes = False
         else:
             if not createdInAppContext:
-                #Re-owning it, I've switched URL's again here but it seems to be working so will not change it
-                url = "%s/servicesNS/%s/%s/configs/conf-macros/%s/acl" % (splunk_rest_dest, owner, app, encoded_name)
-                payload = { "owner": owner, "sharing" : sharing }
-                logger.info("Attempting to change ownership of macro %s via URL %s to owner %s in app %s with sharing %s" % (name, url, owner, app, sharing))
-                res = requests.post(url, auth=(destUsername,destPassword), verify=False, data=payload)
+                # Re-owning it, I've switched URL's again here but it seems to be working
+                # so will not change it
+                url = (
+                    f"{splunk_rest_dest}/servicesNS/{owner}/{app}/configs/"
+                    f"conf-macros/{encoded_name}/acl"
+                )
+                payload = {"owner": owner, "sharing": sharing}
+                logger.info(
+                    f"Attempting to change ownership of macro {name} via URL {url} "
+                    f"to owner {owner} in app {app} with sharing {sharing}"
+                )
+                res = make_request(
+                    url, method='post', auth_type=args.destAuthtype,
+                    username=destUsername, password=destPassword,
+                    token=args.destToken, data=payload, verify=False
+                )
                 if (res.status_code != requests.codes.ok):
-                    logger.error("%s of type macro in app %s with URL %s status code %s reason %s, response '%s', owner %s sharing level %s" % (name, app, url, res.status_code, res.reason, res.text, owner, sharing))
-                    #Hardcoded deletion URL as if this fails it should be this URL...(not parsing the XML here to confirm but this works fine)
-                    deletionURL = "%s/servicesNS/%s/%s/configs/conf-macros/%s" % (splunk_rest_dest, owner, app, name)
-                    logger.info("%s of type macro in app %s recording deletion URL as user URL due to change ownership failure %s" % (name, app, deletionURL))
-                    #Remove the old record
-                    if objExists == False:
+                    logger.error(
+                        f"{name} of type macro in app {app} with URL {url} status "
+                        f"code {res.status_code} reason {res.reason}, response "
+                        f"'{res.text}', owner {owner} sharing level {sharing}"
+                    )
+                    # Hardcoded deletion URL as if this fails it should be this URL...
+                    # (not parsing the XML here to confirm but this works fine)
+                    deletionURL = (
+                        f"{splunk_rest_dest}/servicesNS/{owner}/{app}/configs/"
+                        f"conf-macros/{name}"
+                    )
+                    logger.info(
+                        f"{name} of type macro in app {app} recording deletion URL "
+                        f"as user URL due to change ownership failure {deletionURL}"
+                    )
+                    # Remove the old record
+                    if not objExists:
                         popLastResult(macroResults, 'macroCreationSuccess')
                         macroCreationSuccessRes = False
                         url = url[:-4]
-                        logger.warning("Deleting the private object as it could not be modified %s of type macro in app %s with URL %s" % (name, app, url))
-                        requests.delete(url, auth=(destUsername,destPassword), verify=False)
+                        logger.warning(
+                            f"Deleting the private object as it could not be modified "
+                            f"{name} of type macro in app {app} with URL {url}"
+                        )
+                        make_request(
+                            url, method='delete', auth_type=args.destAuthtype,
+                            username=destUsername, password=destPassword,
+                            token=args.destToken, verify=False
+                        )
                         appendToResults(macroResults, 'creationFailure', name)
                     else:
                         appendToResults(macroResults, 'updateFailure', name)
                         macroCreationSuccessRes = False
                 else:
                     macroCreationSuccessRes = True
-                    logger.debug("%s of type macro in app %s, ownership changed with response '%s', new owner %s and sharing level %s" % (name, app, res.text, owner, sharing))
-                    if objExists == True:
+                    logger.debug(
+                        f"{name} of type macro in app {app}, ownership changed with "
+                        f"response '{res.text}', new owner {owner} and sharing level {sharing}"
+                    )
+                    if objExists:
                         appendToResults(macroResults, 'updateSuccess', name)
             else:
                 macroCreationSuccessRes = True
                 appendToResults(macroResults, 'updateSuccess', name)
 
-            if macroCreationSuccessRes:
-                logger.info("%s %s of type macro in app %s owner is %s sharing level %s was successful" % (createOrUpdate, name, app, owner, sharing))
-            else:
-               logger.warning("%s %s of type macro in app %s owner is %s sharing level %s was not successful, a failure occurred" % (createOrUpdate, name, app, owner, sharing))
-
+        if macroCreationSuccessRes:
+            logger.info(
+                f"{createOrUpdate} {name} of type macro in app {app} owner is {owner} "
+                f"sharing level {sharing} was successful"
+            )
+        else:
+            logger.warning(
+                f"{createOrUpdate} {name} of type macro in app {app} owner is {owner} "
+                f"sharing level {sharing} was not successful, a failure occurred"
+            )
 ###########################
 #
 # Migration functions
@@ -962,146 +1911,323 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
 #
 ###########################
 def dashboards(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "disabled", "eai:appName", "eai:digest", "eai:userName", "isDashboard", "isVisible", "label", "rootNode", "description", "version" ]
-    return runQueries(app, "/data/ui/views", "dashboard", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
-
+    ignoreList = [
+        "disabled", "eai:appName", "eai:digest", "eai:userName", "isDashboard",
+        "isVisible", "label", "rootNode", "description", "version"
+    ]
+    return runQueries(
+        app, "/data/ui/views", "dashboard", ignoreList, destApp,
+        destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled,
+        includeEntities=includeEntities, excludeEntities=excludeEntities,
+        includeOwner=includeOwner, excludeOwner=excludeOwner,
+        privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 ###########################
 #
 # Saved Searches
 #
 ###########################
-def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, ignoreVSID, disableAlertsOrReportsOnMigration, override, overrideAlways, actionResults):
-    ignoreList = [ "embed.enabled", "triggered_alert_count", "next_scheduled_time", "qualifiedSearch" ]
+def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+                  excludeEntities, includeOwner, excludeOwner, privateOnly,
+                  ignoreVSID, disableAlertsOrReportsOnMigration, override,
+                  overrideAlways, actionResults):
+    ignoreList = ["embed.enabled", "triggered_alert_count"]
 
-    #View states gracefully fail in the GUI, via the REST API you cannot create the saved search if the view state does not exist
-    #however the same saved search can work fine on an existing search head (even though the viewstate has been deleted)
+    # View states gracefully fail in the GUI, via the REST API you cannot create
+    # the saved search if the view state does not exist. However, the same saved
+    # search can work fine on an existing search head (even though the viewstate
+    # has been deleted).
     if ignoreVSID:
         ignoreList.append("vsid")
 
-    return runQueries(app, "/saved/searches", "savedsearches", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, disableAlertsOrReportsOnMigration=disableAlertsOrReportsOnMigration, override=override, overrideAlways=overrideAlways, actionResults=actionResults, extra_args="&listDefaultActionArgs=false")
-
+    return runQueries(
+        app, "/saved/searches", "savedsearches", ignoreList, destApp,
+        destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled,
+        includeEntities=includeEntities, excludeEntities=excludeEntities,
+        includeOwner=includeOwner, excludeOwner=excludeOwner,
+        privateOnly=privateOnly,
+        disableAlertsOrReportsOnMigration=disableAlertsOrReportsOnMigration,
+        override=override, overrideAlways=overrideAlways,
+        actionResults=actionResults
+    )
 ###########################
 #
 # field definitions
 #
 ###########################
-def calcfields(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "attribute", "type" ]
-    aliasAttributes = { "field.name" : "name" }
-    return runQueries(app, "/data/props/calcfields", "calcfields", ignoreList, destApp, aliasAttributes, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def calcfields(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+               excludeEntities, includeOwner, excludeOwner, privateOnly,
+               override, overrideAlways, actionResults):
+    ignoreList = ["attribute", "type"]
+    aliasAttributes = {"field.name": "name"}
+    return runQueries(
+        app, "/data/props/calcfields", "calcfields", ignoreList, destApp,
+        aliasAttributes, destOwner=destOwner, noPrivate=noPrivate,
+        noDisabled=noDisabled, includeEntities=includeEntities,
+        excludeEntities=excludeEntities, includeOwner=includeOwner,
+        excludeOwner=excludeOwner, privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
-def fieldaliases(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "attribute", "type", "value" ]
-    return runQueries(app, "/data/props/fieldaliases", "fieldaliases", ignoreList, destApp, nameOverride="name", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def fieldaliases(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+                 excludeEntities, includeOwner, excludeOwner, privateOnly,
+                 override, overrideAlways, actionResults):
+    ignoreList = ["attribute", "type", "value"]
+    return runQueries(
+        app, "/data/props/fieldaliases", "fieldaliases", ignoreList, destApp,
+        nameOverride="name", destOwner=destOwner, noPrivate=noPrivate,
+        noDisabled=noDisabled, includeEntities=includeEntities,
+        excludeEntities=excludeEntities, includeOwner=includeOwner,
+        excludeOwner=excludeOwner, privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
-def fieldextractions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "attribute" ]
-    return runQueries(app, "/data/props/extractions", "fieldextractions", ignoreList, destApp, {}, { "Inline" : "EXTRACT", "Uses transform" : "REPORT" }, "attribute", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def fieldextractions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+                     excludeEntities, includeOwner, excludeOwner, privateOnly,
+                     override, overrideAlways, actionResults):
+    ignoreList = ["attribute"]
+    return runQueries(
+        app, "/data/props/extractions", "fieldextractions", ignoreList,
+        destApp, {}, {"Inline": "EXTRACT", "Uses transform": "REPORT"},
+        "attribute", destOwner=destOwner, noPrivate=noPrivate,
+        noDisabled=noDisabled, includeEntities=includeEntities,
+        excludeEntities=excludeEntities, includeOwner=includeOwner,
+        excludeOwner=excludeOwner, privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
-def fieldtransformations(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "attribute", "DEFAULT_VALUE", "DEPTH_LIMIT", "LOOKAHEAD", "MATCH_LIMIT", "WRITE_META", "eai:appName", "eai:userName", "DEST_KEY" ]
-    return runQueries(app, "/data/transforms/extractions", "fieldtransformations", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def fieldtransformations(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+                         excludeEntities, includeOwner, excludeOwner, privateOnly,
+                         override, overrideAlways, actionResults):
+    ignoreList = [
+        "attribute", "DEFAULT_VALUE", "DEPTH_LIMIT", "LOOKAHEAD", "MATCH_LIMIT",
+        "WRITE_META", "eai:appName", "eai:userName", "DEST_KEY"
+    ]
+    return runQueries(
+        app, "/data/transforms/extractions", "fieldtransformations",
+        ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate,
+        noDisabled=noDisabled, includeEntities=includeEntities,
+        excludeEntities=excludeEntities, includeOwner=includeOwner,
+        excludeOwner=excludeOwner, privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
-def workflowactions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "disabled", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/data/ui/workflow-actions", "workflow-actions", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def workflowactions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+                    excludeEntities, includeOwner, excludeOwner, privateOnly,
+                    override, overrideAlways, actionResults):
+    ignoreList = ["disabled", "eai:appName", "eai:userName"]
+    return runQueries(
+        app, "/data/ui/workflow-actions", "workflow-actions", ignoreList,
+        destApp, destOwner=destOwner, noPrivate=noPrivate,
+        noDisabled=noDisabled, includeEntities=includeEntities,
+        excludeEntities=excludeEntities, includeOwner=includeOwner,
+        excludeOwner=excludeOwner, privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
-def sourcetyperenaming(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "attribute", "disabled", "eai:appName", "eai:userName", "stanza", "type" ]
-    return runQueries(app, "/data/props/sourcetype-rename", "sourcetype-rename", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def sourcetyperenaming(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+                       excludeEntities, includeOwner, excludeOwner, privateOnly,
+                       override, overrideAlways, actionResults):
+    ignoreList = ["attribute", "disabled", "eai:appName", "eai:userName", "stanza", "type"]
+    return runQueries(
+        app, "/data/props/sourcetype-rename", "sourcetype-rename", ignoreList,
+        destApp, destOwner=destOwner, noPrivate=noPrivate,
+        noDisabled=noDisabled, includeEntities=includeEntities,
+        excludeEntities=excludeEntities, includeOwner=includeOwner,
+        excludeOwner=excludeOwner, privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
 ###########################
 #
 # tags
 #
 ##########################
-def tags(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "disabled", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/configs/conf-tags", "tags", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def tags(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+         excludeEntities, includeOwner, excludeOwner, privateOnly, override,
+         overrideAlways, actionResults):
+    ignoreList = ["disabled", "eai:appName", "eai:userName"]
+    return runQueries(
+        app, "/configs/conf-tags", "tags", ignoreList, destApp,
+        destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled,
+        includeEntities=includeEntities, excludeEntities=excludeEntities,
+        includeOwner=includeOwner, excludeOwner=excludeOwner,
+        privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
 ###########################
 #
 # eventtypes
 #
 ##########################
-def eventtypes(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "disabled", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/saved/eventtypes", "eventtypes", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def eventtypes(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+               excludeEntities, includeOwner, excludeOwner, privateOnly,
+               override, overrideAlways, actionResults):
+    ignoreList = ["disabled", "eai:appName", "eai:userName"]
+    return runQueries(
+        app, "/saved/eventtypes", "eventtypes", ignoreList, destApp,
+        destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled,
+        includeEntities=includeEntities, excludeEntities=excludeEntities,
+        includeOwner=includeOwner, excludeOwner=excludeOwner,
+        privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
 ###########################
 #
 # navMenus
 #
 ##########################
-def navMenu(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "disabled", "eai:appName", "eai:userName", "eai:digest", "rootNode" ]
-    #If override we override the default nav menu of the destination app
-    return runQueries(app, "/data/ui/nav", "navMenu", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, override=override, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, overrideAlways=overrideAlways, actionResults=actionResults)
+def navMenu(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+            excludeEntities, includeOwner, excludeOwner, privateOnly, override,
+            overrideAlways, actionResults):
+    ignoreList = ["disabled", "eai:appName", "eai:userName", "eai:digest", "rootNode"]
+    # If override we override the default nav menu of the destination app
+    return runQueries(
+        app, "/data/ui/nav", "navMenu", ignoreList, destApp,
+        destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled,
+        override=override, includeEntities=includeEntities,
+        excludeEntities=excludeEntities, includeOwner=includeOwner,
+        excludeOwner=excludeOwner, privateOnly=privateOnly,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
 ###########################
 #
 # data models
 #
 ##########################
-def datamodels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "disabled", "eai:appName", "eai:userName", "eai:digest", "eai:type", "acceleration.allowed" ]
-    #If override we override the default nav menu of the destination app
-    return runQueries(app, "/datamodel/model", "datamodels", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def datamodels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+               excludeEntities, includeOwner, excludeOwner, privateOnly, override,
+               overrideAlways, actionResults):
+    ignoreList = [
+        "disabled", "eai:appName", "eai:userName", "eai:digest", "eai:type",
+        "acceleration.allowed"
+    ]
+    # If override we override the default nav menu of the destination app
+    return runQueries(
+        app, "/datamodel/model", "datamodels", ignoreList, destApp,
+        destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled,
+        includeEntities=includeEntities, excludeEntities=excludeEntities,
+        includeOwner=includeOwner, excludeOwner=excludeOwner,
+        privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
 ###########################
 #
 # collections
 #
 ##########################
-def collections(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "eai:appName", "eai:userName", "type" ]
-    #nobody is the only username that can be used when working with collections
-    return runQueries(app, "/storage/collections/config", "collections (kvstore definition)", ignoreList, destApp,destOwner="nobody", noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
-
+def collections(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+                excludeEntities, includeOwner, excludeOwner, privateOnly, override,
+                overrideAlways, actionResults):
+    ignoreList = ["eai:appName", "eai:userName", "type"]
+    # nobody is the only username that can be used when working with collections
+    return runQueries(
+        app, "/storage/collections/config", "collections (kvstore definition)",
+        ignoreList, destApp, destOwner="nobody", noPrivate=noPrivate,
+        noDisabled=noDisabled, includeEntities=includeEntities,
+        excludeEntities=excludeEntities, includeOwner=includeOwner,
+        excludeOwner=excludeOwner, privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 ###########################
 #
 # viewstates
 #
 ##########################
-def viewstates(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "eai:appName", "eai:userName" ]
-    #nobody is the only username that can be used when working with collections
-    return runQueries(app, "/configs/conf-viewstates", "viewstates", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def viewstates(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+               excludeEntities, includeOwner, excludeOwner, privateOnly, override,
+               overrideAlways, actionResults):
+    ignoreList = ["eai:appName", "eai:userName"]
+    # nobody is the only username that can be used when working with collections
+    return runQueries(
+        app, "/configs/conf-viewstates", "viewstates", ignoreList, destApp,
+        destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled,
+        includeEntities=includeEntities, excludeEntities=excludeEntities,
+        includeOwner=includeOwner, excludeOwner=excludeOwner,
+        privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
 ###########################
 #
 # time labels (conf-times)
 #
 ##########################
-def times(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "disabled", "eai:appName", "eai:userName", "header_label" ]
-    return runQueries(app, "/configs/conf-times", "times (conf-times)", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def times(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+          excludeEntities, includeOwner, excludeOwner, privateOnly, override,
+          overrideAlways, actionResults):
+    ignoreList = ["disabled", "eai:appName", "eai:userName", "header_label"]
+    return runQueries(
+        app, "/configs/conf-times", "times (conf-times)", ignoreList, destApp,
+        destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled,
+        includeEntities=includeEntities, excludeEntities=excludeEntities,
+        includeOwner=includeOwner, excludeOwner=excludeOwner,
+        privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
 ###########################
 #
 # panels
 #
 ##########################
-def panels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "disabled", "eai:digest", "panel.title", "rootNode", "eai:appName", "eai:userName" ]
-    return runQueries(app, "/data/ui/panels", "pre-built dashboard panels", ignoreList, destApp,destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def panels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+           excludeEntities, includeOwner, excludeOwner, privateOnly, override,
+           overrideAlways, actionResults):
+    ignoreList = [
+        "disabled", "eai:digest", "panel.title", "rootNode", "eai:appName",
+        "eai:userName"
+    ]
+    return runQueries(
+        app, "/data/ui/panels", "pre-built dashboard panels", ignoreList,
+        destApp, destOwner=destOwner, noPrivate=noPrivate,
+        noDisabled=noDisabled, includeEntities=includeEntities,
+        excludeEntities=excludeEntities, includeOwner=includeOwner,
+        excludeOwner=excludeOwner, privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
 ###########################
 #
 # lookups (definition/automatic)
 #
 ##########################
-#def lookupFiles(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-#/data/lookup-table-files from lookup editor?
+def lookupDefinitions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+                      excludeEntities, includeOwner, excludeOwner, privateOnly,
+                      override, overrideAlways, actionResults):
+    ignoreList = [
+        "disabled", "eai:appName", "eai:userName", "CAN_OPTIMIZE", "CLEAN_KEYS",
+        "DEPTH_LIMIT", "KEEP_EMPTY_VALS", "LOOKAHEAD", "MATCH_LIMIT", "MV_ADD",
+        "SOURCE_KEY", "WRITE_META", "fields_array", "type"
+    ]
+    # If override we override the default nav menu of the destination app
+    return runQueries(
+        app, "/data/transforms/lookups", "lookup definition", ignoreList,
+        destApp, destOwner=destOwner, noPrivate=noPrivate,
+        noDisabled=noDisabled, includeEntities=includeEntities,
+        excludeEntities=excludeEntities, includeOwner=includeOwner,
+        excludeOwner=excludeOwner, privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
-def lookupDefinitions(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "disabled", "eai:appName", "eai:userName", "CAN_OPTIMIZE", "CLEAN_KEYS", "DEPTH_LIMIT", "KEEP_EMPTY_VALS", "LOOKAHEAD", "MATCH_LIMIT", "MV_ADD", "SOURCE_KEY", "WRITE_META", "fields_array", "type" ]
-    #If override we override the default nav menu of the destination app
-    return runQueries(app, "/data/transforms/lookups", "lookup definition", ignoreList, destApp, destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
 
-def automaticLookups(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [ "attribute", "type", "value" ]
-    return runQueries(app, "/data/props/lookups", "automatic lookup", ignoreList, destApp, {}, {}, "attribute", destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled, includeEntities=includeEntities, excludeEntities=excludeEntities, includeOwner=includeOwner, excludeOwner=excludeOwner, privateOnly=privateOnly, override=override, overrideAlways=overrideAlways, actionResults=actionResults)
+def automaticLookups(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
+                     excludeEntities, includeOwner, excludeOwner, privateOnly,
+                     override, overrideAlways, actionResults):
+    ignoreList = ["attribute", "type", "value"]
+    return runQueries(
+        app, "/data/props/lookups", "automatic lookup", ignoreList, destApp,
+        {}, {}, "attribute", destOwner=destOwner, noPrivate=noPrivate,
+        noDisabled=noDisabled, includeEntities=includeEntities,
+        excludeEntities=excludeEntities, includeOwner=includeOwner,
+        excludeOwner=excludeOwner, privateOnly=privateOnly, override=override,
+        overrideAlways=overrideAlways, actionResults=actionResults
+    )
 
 ###########################
 #
@@ -1110,44 +2236,48 @@ def automaticLookups(app, destApp, destOwner, noPrivate, noDisabled, includeEnti
 ##########################
 
 def logDeletionScriptInLogs(theDict, printPasswords, destUsername, destPassword):
-    list = None
+    list_to_log = None
 
-    #If we have nothing to log return
+    # If we have nothing to log, return
     if not theDict:
         return
     if 'creationSuccess' in theDict:
-        list = theDict['creationSuccess']
+        list_to_log = theDict['creationSuccess']
     else:
         return
 
-    for item in list:
-        item = item.replace("(", "\(").replace(")","\)")
+    for item in list_to_log:
+        item = item.replace("(", "\(").replace(")", "\)")
         if printPasswords:
-            logger.info("curl -k -u %s:%s --request DELETE %s" % (destUsername, destPassword, item))
+            logger.info(
+                f"curl -k -u {destUsername}:{destPassword} --request DELETE {item}"
+            )
         else:
-            logger.info("curl -k --request DELETE %s" % (item))
+            logger.info(f"curl -k --request DELETE {item}")
 
-def logCreationFailure(theDict, type, app):
-    list = None
-    #If we have nothing to log return
+
+def logCreationFailure(theDict, obj_type, app):
+    list_to_log = None
+    # If we have nothing to log, return
     if not theDict:
         return
     if 'creationFailure' in theDict:
-        list = theDict['creationFailure']
+        list_to_log = theDict['creationFailure']
     else:
         return
 
-    for item in list:
-        logger.warning("In App %s, %s '%s' failed to create" % (app, type, item))
+    for item in list_to_log:
+        logger.warning(f"In App {app}, {obj_type} '{item}' failed to create")
 
-def logStats(resultsDict, type, app):
+
+def logStats(resultsDict, obj_type, app):
     successList = []
     failureList = []
     skippedList = []
     updateSuccess = []
     updateFailure = []
 
-    #If we have nothing to log return
+    # If we have nothing to log, return
     if not resultsDict:
         return
 
@@ -1162,15 +2292,23 @@ def logStats(resultsDict, type, app):
     if 'updateFailure' in resultsDict:
         updateFailure = resultsDict['updateFailure']
 
-    logger.info("App %s, %d %s successfully migrated %d %s failed to migrate, %s were skipped due to existing already, %s were updated, %s failed to update" % (app, len(successList), type, len(failureList), type, len(skippedList), len(updateSuccess), len(updateFailure)))
+    logger.info(
+        f"App {app}, {len(successList)} {obj_type} successfully migrated "
+        f"{len(failureList)} {obj_type} failed to migrate, "
+        f"{len(skippedList)} were skipped due to existing already, "
+        f"{len(updateSuccess)} were updated, {len(updateFailure)} failed to update"
+    )
 
-def handleFailureLogging(failureList, type, app):
-    logCreationFailure(failureList, type, app)
+
+def handleFailureLogging(failureList, obj_type, app):
+    logCreationFailure(failureList, obj_type, app)
+
 
 def logDeletion(successList, printPasswords, destUsername, destPassword):
     logDeletionScriptInLogs(successList, printPasswords, destUsername, destPassword)
 
-#helper function as per https://stackoverflow.com/questions/31433989/return-copy-of-dictionary-excluding-specified-keys
+
+# Helper function as per https://stackoverflow.com/questions/31433989/return-copy-of-dictionary-excluding-specified-keys
 def without_keys(d, keys):
     return {x: d[x] for x in d if x not in keys}
 
@@ -1184,7 +2322,7 @@ savedSearchResults = None
 calcfieldsResults = None
 fieldaliasesResults = None
 fieldextractionsResults = None
-dashboardResults= None
+dashboardResults = None
 fieldTransformationsResults = None
 timesResults = None
 panelsResults = None
@@ -1200,7 +2338,7 @@ collectionsResults = None
 viewstatesResults = None
 macroResults = None
 
-#If the all switch is provided, migrate everything
+# If the all switch is provided, migrate everything
 if args.all:
     args.macros = True
     args.tags = True
@@ -1217,7 +2355,7 @@ if args.all:
     args.panels = True
     args.viewstates = True
 
-#All field related switches on anything under Settings -> Fields
+# All field related switches on anything under Settings -> Fields
 if args.allFieldRelated:
     args.calcFields = True
     args.fieldAlias = True
@@ -1230,7 +2368,8 @@ if args.allFieldRelated:
 #
 # Include/Exclude lists
 #   we have the option of allowing only particular entities, or excluding some entities
-#   we also do the same trick for owners so we can include only some users or exclude some users from migration
+#   we also do the same trick for owners so we can include only some users
+#   or exclude some users from migration
 #
 ##########################
 includeEntities = None
@@ -1249,23 +2388,29 @@ includeOwner = None
 if args.includeOwner:
     includeOwner = [x.strip() for x in args.includeOwner.split(',')]
 
-excludedList = [ "srcPassword", "destPassword" ]
+excludedList = ["srcPassword", "destPassword"]
 cleanArgs = without_keys(vars(args), excludedList)
-logger.info("transfer splunk knowledge objects run with arguments %s" % (cleanArgs))
+logger.info(f"transfer splunk knowledge objects run with arguments {cleanArgs}")
 
 src_app_list = None
-#Wildcarded app names...use regex
+# Wildcarded app names...use regex
 if srcApp.find("*") != -1:
     src_app_list = []
-    url = splunk_rest + "/services/apps/local?search=disabled%3D0&f=title&count=0&output_mode=json"
+    url = (
+        f"{splunk_rest}/services/apps/local?search=disabled%3D0&f=title&count=0"
+        f"&output_mode=json"
+    )
     app_pattern = re.compile(srcApp)
-    #Verify=false is hardcoded to workaround local SSL issues
-    res = requests.get(url, auth=(srcUsername,srcPassword), verify=False)
+    # Verify=false is hardcoded to workaround local SSL issues
+    res = make_request(
+        url, method='get', auth_type=args.srcAuthtype, username=srcUsername,
+        password=srcPassword, token=args.srcToken, verify=False
+    )
     resDict = json.loads(res.text)
     for entry in resDict['entry']:
-        logger.debug("entry name is %s, pattern is %s" % (entry['name'], srcApp))
+        logger.debug(f"entry name is {entry['name']}, pattern is {srcApp}")
         if app_pattern.search(entry['name']):
-            logger.info("Adding app %s to the list of apps" % (entry['name']))
+            logger.info(f"Adding app {entry['name']} to the list of apps")
             src_app_list.append(entry['name'])
 
 ###########################
@@ -1274,194 +2419,419 @@ if srcApp.find("*") != -1:
 #   Based on the command line parameters actually run the functions which will migrate the knowledge objects
 #
 ##########################
+# Check and create destination app before starting transfers
+logger.info(f"Checking if destination app '{destApp}' exists")
+dest_parts = splunk_rest_dest.replace('https://', '').replace('http://', '').split(':')
+dest_host = dest_parts[0]
+dest_port = dest_parts[1] if len(dest_parts) > 1 else '8089'
+
+# Get source app ACL first
+src_parts = splunk_rest.replace('https://', '').replace('http://', '').split(':')
+src_host = src_parts[0]
+src_port = src_parts[1] if len(src_parts) > 1 else '8089'
+
+source_app_acl = get_app_acl(
+    src_host, src_port, args.srcAuthtype,
+    srcUsername, srcPassword, srcToken, srcApp
+)
+
+if source_app_acl:
+    logger.info(
+        f"Retrieved source app '{srcApp}' ACL - sharing: "
+        f"{source_app_acl.get('sharing')}, owner: {source_app_acl.get('owner')}"
+    )
+
+app_exists = check_and_create_app(
+    dest_host, dest_port, args.destAuthtype,
+    destUsername, destPassword, destToken, destApp, source_app_acl
+)
+
+if not app_exists:
+    logger.error(f"Cannot create or verify destination app '{destApp}' - exiting")
+    exit(1)
+
+logger.info(f"Destination app '{destApp}' is ready for knowledge object transfers")
+
 if args.macros:
     logger.info("Begin macros transfer")
     macroResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, macroResults)
+        for current_src_app in src_app_list:
+            macros(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, macroResults
+            )
     else:
-        macros(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, macroResults)
+        macros(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            macroResults
+        )
     logger.info("End macros transfer")
 
 if args.tags:
     logger.info("Begin tags transfer")
     tagsResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, tagsResults)
+        for current_src_app in src_app_list:
+            tags(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, tagsResults
+            )
     else:
-        tagsResults = tags(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, tagsResults)
+        tagsResults = tags(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            tagsResults
+        )
     logger.info("End tags transfer")
 
 if args.eventtypes:
     logger.info("Begin eventtypes transfer")
     eventTypesResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, eventTypesResults)
+        for current_src_app in src_app_list:
+            eventtypes(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, eventTypesResults
+            )
     else:
-        eventtypes(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, eventTypesResults)
+        eventtypes(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            eventTypesResults
+        )
     logger.info("End eventtypes transfer")
 
 if args.calcFields:
     logger.info("Begin calcFields transfer")
     calcfieldsResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, calcfieldsResults)
+        for current_src_app in src_app_list:
+            calcfields(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, calcfieldsResults
+            )
     else:
-        calcfields(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, calcfieldsResults)
+        calcfields(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            calcfieldsResults
+        )
     logger.info("End calcFields transfer")
 
 if args.fieldAlias:
     logger.info("Begin fieldAlias transfer")
     fieldaliasesResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldaliasesResults)
+        for current_src_app in src_app_list:
+            fieldaliases(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, fieldaliasesResults
+            )
     else:
-        fieldaliases(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldaliasesResults)
+        fieldaliases(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            fieldaliasesResults
+        )
     logger.info("End fieldAlias transfer")
 
 if args.fieldTransforms:
     logger.info("Begin fieldTransforms transfer")
     fieldTransformationsResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldTransformationsResults)
+        for current_src_app in src_app_list:
+            fieldtransformations(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, fieldTransformationsResults
+            )
     else:
-        fieldTransformationsResults = fieldtransformations(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldTransformationsResults)
+        fieldTransformationsResults = fieldtransformations(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            fieldTransformationsResults
+        )
     logger.info("End fieldTransforms transfer")
 
 if args.fieldExtraction:
     logger.info("Begin fieldExtraction transfer")
     fieldextractionsResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldextractionsResults)
+        for current_src_app in src_app_list:
+            fieldextractions(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, fieldextractionsResults
+            )
     else:
-        fieldextractions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, fieldextractionsResults)
+        fieldextractions(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            fieldextractionsResults
+        )
     logger.info("End fieldExtraction transfer")
 
 if args.collections:
     logger.info("Begin collections (kvstore definition) transfer")
     collectionsResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, collectionsResults)
+        for current_src_app in src_app_list:
+            collections(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, collectionsResults
+            )
     else:
-        collections(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, collectionsResults)
+        collections(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            collectionsResults
+        )
     logger.info("End collections (kvstore definition) transfer")
 
 if args.lookupDefinition:
     logger.info("Begin lookupDefinitions transfer")
     lookupDefinitionsResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, lookupDefinitionsResults)
+        for current_src_app in src_app_list:
+            lookupDefinitions(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, lookupDefinitionsResults
+            )
     else:
-        lookupDefinitions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, lookupDefinitionsResults)
+        lookupDefinitions(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            lookupDefinitionsResults
+        )
     logger.info("End lookupDefinitions transfer")
 
 if args.automaticLookup:
     logger.info("Begin automaticLookup transfer")
     automaticLookupsResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, automaticLookupsResults)
+        for current_src_app in src_app_list:
+            automaticLookups(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, automaticLookupsResults
+            )
     else:
-        automaticLookups(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, automaticLookupsResults)
+        automaticLookups(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            automaticLookupsResults
+        )
     logger.info("End automaticLookup transfer")
 
 if args.times:
     logger.info("Begin times (conf-times) transfer")
     timesResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, timesResults)
+        for current_src_app in src_app_list:
+            times(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, timesResults
+            )
     else:
-        times(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, timesResults)
+        times(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            timesResults
+        )
     logger.info("End times (conf-times) transfer")
 
 if args.viewstates:
     logger.info("Begin viewstates transfer")
     viewstatesResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, viewstatesResults)
+        for current_src_app in src_app_list:
+            viewstates(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, viewstatesResults
+            )
     else:
-        viewstates(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, viewstatesResults)
+        viewstates(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            viewstatesResults
+        )
     logger.info("End viewstates transfer")
 
 if args.panels:
     logger.info("Begin pre-built dashboard panels transfer")
     panelsResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, panelsResults)
+        for current_src_app in src_app_list:
+            panels(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, panelsResults
+            )
     else:
-        panels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, panelsResults)
+        panels(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            panelsResults
+        )
     logger.info("End pre-built dashboard panels transfer")
 
 if args.datamodels:
     logger.info("Begin datamodels transfer")
     datamodelResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, datamodelResults)
+        for current_src_app in src_app_list:
+            datamodels(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, datamodelResults
+            )
     else:
-        datamodels(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, datamodelResults)
+        datamodels(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            datamodelResults
+        )
     logger.info("End datamodels transfer")
 
 if args.dashboards:
     logger.info("Begin dashboards transfer")
     dashboardResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, dashboardResults)
+        for current_src_app in src_app_list:
+            dashboards(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, dashboardResults
+            )
     else:
-        dashboards(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, dashboardResults)
+        dashboards(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            dashboardResults
+        )
     logger.info("End dashboards transfer")
 
 if args.savedsearches:
     logger.info("Begin savedsearches transfer")
     savedSearchResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.overrideMode, args.overrideAlwaysMode, savedSearchResults)
+        for current_src_app in src_app_list:
+            savedsearches(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute,
+                args.disableAlertsOrReportsOnMigration, args.overrideMode,
+                args.overrideAlwaysMode, savedSearchResults
+            )
     else:
-        savedsearches(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.ignoreViewstatesAttribute, args.disableAlertsOrReportsOnMigration, args.overrideMode, args.overrideAlwaysMode, savedSearchResults)
+        savedsearches(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.ignoreViewstatesAttribute,
+            args.disableAlertsOrReportsOnMigration, args.overrideMode,
+            args.overrideAlwaysMode, savedSearchResults
+        )
     logger.info("End savedsearches transfer")
 
 if args.workflowActions:
     logger.info("Begin workflowActions transfer")
     workflowActionsResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, workflowActionsResults)
+        for current_src_app in src_app_list:
+            workflowactions(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, workflowActionsResults
+            )
     else:
-        workflowactions(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, workflowActionsResults)
+        workflowactions(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            workflowActionsResults
+        )
     logger.info("End workflowActions transfer")
 
 if args.sourcetypeRenaming:
     logger.info("Begin sourcetypeRenaming transfer")
     sourcetypeRenamingResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, sourcetypeRenamingResults)
+        for current_src_app in src_app_list:
+            sourcetyperenaming(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, sourcetypeRenamingResults
+            )
     else:
-        sourcetyperenaming(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, sourcetypeRenamingResults)
+        sourcetyperenaming(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            sourcetypeRenamingResults
+        )
     logger.info("End sourcetypeRenaming transfer")
 
 if args.navMenu:
     logger.info("Begin navMenu transfer")
     navMenuResults = {}
     if src_app_list:
-        for srcApp in src_app_list:
-            navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, navMenuResults)
+        for current_src_app in src_app_list:
+            navMenu(
+                current_src_app, destApp, destOwner, args.noPrivate,
+                args.noDisabled, includeEntities, excludeEntities, includeOwner,
+                excludeOwner, args.privateOnly, args.overrideMode,
+                args.overrideAlwaysMode, navMenuResults
+            )
     else:
-        navMenu(srcApp, destApp, destOwner, args.noPrivate, args.noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, args.privateOnly, args.overrideMode, args.overrideAlwaysMode, navMenuResults)
+        navMenu(
+            srcApp, destApp, destOwner, args.noPrivate, args.noDisabled,
+            includeEntities, excludeEntities, includeOwner, excludeOwner,
+            args.privateOnly, args.overrideMode, args.overrideAlwaysMode,
+            navMenuResults
+        )
     logger.info("End navMenu transfer")
 
 ###########################
@@ -1531,5 +2901,6 @@ logStats(collectionsResults, "collections", srcApp)
 logStats(timesResults, "times (conf-times)", srcApp)
 logStats(panelsResults, "pre-built dashboard panels", srcApp)
 
-logger.info("The undo command is: grep -o \"curl.*DELETE.*\" /tmp/transfer_knowledgeobj.log | grep -v \"curl\.\*DELETE\"")
+logger.info("The undo command is: grep -o \"curl.*DELETE.*\" /tmp/transfer_knowledgeobj.log "
+            "| grep -v \"curl\.\*DELETE\"")
 logger.info("Done")
