@@ -800,14 +800,14 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                                             for item in perm:
                                                 read_perms.append(item.text)
                                             acl_info['perms']['read'] = read_perms
-                                            logger.debug(f"{info["name"]} of type {type} has read permissions "
+                                            logger.debug(f"{info['name']} of type {type} has read permissions "
                                                          f"{read_perms} in app {app}")
                                         elif perm.attrib['name'] == 'write':
                                             write_perms = []
                                             for item in perm:
                                                 write_perms.append(item.text)
                                             acl_info['perms']['write'] = write_perms
-                                            logger.debug(f"{info["name"]} of type {type} has write permissions "
+                                            logger.debug(f"{info['name']} of type {type} has write permissions "
                                                          f"{write_perms} in app {app}")
 
                         else:
@@ -821,7 +821,7 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
 
                             #If it's disabled *and* we don't want disabled objects we can determine this here
                             if attribName == "disabled" and noDisabled and theAttribute.text == "1":
-                                logger.debug(f"{info["name"]} of type {type} is disabled and the noDisabled flag is "
+                                logger.debug(f"{info['name']} of type {type} is disabled and the noDisabled flag is "
                                              f"true, excluding this in app {app}")
                                 keep = False
                                 break
@@ -832,7 +832,7 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                             if theAttribute.text in valueAliases:
                                 theAttribute.text = valueAliases[theAttribute.text]
 
-                            logger.debug(f"{info["name"]} of type {type} found key/value of "
+                            logger.debug(f"{info['name']} of type {type} found key/value of "
                                          f"{attribName}={theAttribute.text} in app context {app}" )
 
                             #Yet another hack, this time to deal with collections using accelrated_fields.<value> when
