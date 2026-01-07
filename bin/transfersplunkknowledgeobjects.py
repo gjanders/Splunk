@@ -39,7 +39,9 @@ import time
 import random
 import string
 from requests.exceptions import ConnectionError, Timeout
+import urllib3
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Setup logging for both console and file output
 logging_config = dict(
@@ -217,6 +219,10 @@ parser.add_argument('-srcToken',
                     help='(optional) token to use for REST API of srcURL argument (required if srcAuthtype=token)')
 parser.add_argument('-destToken',
                     help='(optional) token to use for REST API of destURL argument (required if destAuthtype=token)')
+parser.add_argument('-skipDefaults', 
+                    help='(optional) the endpoint /services/properties/<type>/default can be used to list default options. Can set this to skip source, destination or none to disable the skipping of these attributes',
+                    choices=['source','destination','none'],
+                    default='destination')
 
 args = parser.parse_args()
 
@@ -674,20 +680,20 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                     title = innerChild.text
                     info["name"] = title
                     logger.debug(
-                        f"{title} is the name/title of this entry for type {type} in app {app}"
+                        f"{title} is the name/title of this entry for type {obj_type} in app {app}"
                     )
                     # If we have an include/exclude list we deal with that scenario now
                     if includeEntities:
                         if title not in includeEntities:
                             logger.debug(
-                                f"{title} of type {type} not in includeEntities list in app {app}"
+                                f"{title} of type {obj_type} not in includeEntities list in app {app}"
                             )
                             keep = False
                             break
                     if excludeEntities:
                         if title in excludeEntities:
                             logger.debug(
-                                f"{title} of type {type} in excludeEntities list in app {app}"
+                                f"{title} of type {obj_type} in excludeEntities list in app {app}"
                             )
                             keep = False
                             break
@@ -695,7 +701,7 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                     if args.nameFilter:
                         if not nameFilter.search(title):
                             logger.debug(
-                                f"{title} of type {type} does not match regex in app {app}"
+                                f"{title} of type {obj_type} does not match regex in app {app}"
                             )
                             keep = False
                             break
@@ -707,9 +713,9 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
 
                 elif innerChild.tag.endswith("updated"):
                     updatedStr = innerChild.text
-                    updated = determineTime(updatedStr, info["name"], app, type)
+                    updated = determineTime(updatedStr, info["name"], app, obj_type)
                     info['updated'] = updated
-                    logger.debug(f"name {title}, type {type} in app {app} was updated on {updated}")
+                    logger.debug(f"name {title}, type {obj_type} in app {app} was updated on {updated}")
                 #Content appears to be where 90% of the data we want is located
                 elif innerChild.tag.endswith("content"):
                     for theAttribute in innerChild[0]:
@@ -720,20 +726,20 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                             for theList in theAttribute[0]:
                                 if theList.attrib['name'] == 'sharing':
                                     logger.debug(
-                                        f"{info['name']} of type {type} has sharing {theList.text} in app {app}"
+                                        f"{info['name']} of type {obj_type} has sharing {theList.text} in app {app}"
                                     )
                                     info["sharing"] = theList.text
                                     acl_info["sharing"] = theList.text
                                     if noPrivate and info["sharing"] == "user":
                                         logger.debug(
-                                            f"{info['name']} of type {type} found but the noPrivate flag is true, "
+                                            f"{info['name']} of type {obj_type} found but the noPrivate flag is true, "
                                             f"excluding this in app {app}"
                                         )
                                         keep = False
                                         break
                                     elif privateOnly and info["sharing"] != "user":
                                         logger.debug(
-                                            f"{info['name']} of type {type} found but the privateOnly flag is true "
+                                            f"{info['name']} of type {obj_type} found but the privateOnly flag is true "
                                             f"and value of {info['sharing']} is not user level sharing (private), "
                                             f"excluding this in app {app}"
                                         )
@@ -742,7 +748,7 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
 
                                     if args.sharingFilter and not args.sharingFilter == info["sharing"]:
                                         logger.debug(
-                                            f"{info['name']} of type {type} found but the sharing level is set to "
+                                            f"{info['name']} of type {obj_type} found but the sharing level is set to "
                                             f"{args.sharingFilter} and this object has sharing {info['sharing']} "
                                             f"excluding this in app {app}"
                                         )
@@ -753,13 +759,13 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                                     foundApp = theList.text
                                     acl_info["app"] = foundApp
                                     logger.debug(
-                                        f"{info['name']} of type {type} in app context of {app} belongs to {foundApp}"
+                                        f"{info['name']} of type {obj_type} in app context of {app} belongs to {foundApp}"
                                     )
                                     #We can see globally shared objects in our app context, it does not mean we should
                                     # migrate them as it's not ours...
                                     if app != foundApp:
                                         logger.debug(
-                                            f"{info['name']} of type {type} found in app context of {app} "
+                                            f"{info['name']} of type {obj_type} found in app context of {app} "
                                             f"belongs to app context {foundApp}, excluding from app {app}"
                                         )
                                         keep = False
@@ -773,7 +779,7 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                                     if includeOwner:
                                         if not owner in includeOwner:
                                             logger.debug(
-                                                f"{info['name']} of type {type} with owner {owner} not in "
+                                                f"{info['name']} of type {obj_type} with owner {owner} not in "
                                                 f"includeOwner list in app {app}"
                                             )
                                             keep = False
@@ -781,13 +787,13 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                                     if excludeOwner:
                                         if owner in excludeOwner:
                                             logger.debug(
-                                                f"{info['name']} of type {type} with owner {owner} in "
+                                                f"{info['name']} of type {obj_type} with owner {owner} in "
                                                 f"excludeOwner list in app {app}"
                                             )
                                             keep = False
                                             break
                                     logger.debug(
-                                        f"{info['name']} of type {type} has owner {owner} in app {app}"
+                                        f"{info['name']} of type {obj_type} has owner {owner} in app {app}"
                                     )
                                     info["owner"] = owner
                                 # Capture read permissions
@@ -795,19 +801,22 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                                     if 'perms' not in acl_info:
                                         acl_info['perms'] = {}
                                     for perm in theList:
-                                        if perm.attrib['name'] == 'read':
+                                        if not 'name' in perm.attrib:
+                                            # empty?
+                                            continue
+                                        elif perm.attrib['name'] == 'read':
                                             read_perms = []
                                             for item in perm:
                                                 read_perms.append(item.text)
                                             acl_info['perms']['read'] = read_perms
-                                            logger.debug(f"{info['name']} of type {type} has read permissions "
+                                            logger.debug(f"{info['name']} of type {obj_type} has read permissions "
                                                          f"{read_perms} in app {app}")
                                         elif perm.attrib['name'] == 'write':
                                             write_perms = []
                                             for item in perm:
                                                 write_perms.append(item.text)
                                             acl_info['perms']['write'] = write_perms
-                                            logger.debug(f"{info['name']} of type {type} has write permissions "
+                                            logger.debug(f"{info['name']} of type {obj_type} has write permissions "
                                                          f"{write_perms} in app {app}")
 
                         else:
@@ -821,7 +830,7 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
 
                             #If it's disabled *and* we don't want disabled objects we can determine this here
                             if attribName == "disabled" and noDisabled and theAttribute.text == "1":
-                                logger.debug(f"{info['name']} of type {type} is disabled and the noDisabled flag is "
+                                logger.debug(f"{info['name']} of type {obj_type} is disabled and the noDisabled flag is "
                                              f"true, excluding this in app {app}")
                                 keep = False
                                 break
@@ -832,17 +841,17 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                             if theAttribute.text in valueAliases:
                                 theAttribute.text = valueAliases[theAttribute.text]
 
-                            logger.debug(f"{info['name']} of type {type} found key/value of "
+                            logger.debug(f"{info['name']} of type {obj_type} found key/value of "
                                          f"{attribName}={theAttribute.text} in app context {app}" )
 
                             #Yet another hack, this time to deal with collections using accelrated_fields.<value> when
                             # looking at it via REST GET requests, but requiring accelerated_fields to be used when
                             # POST'ing the value to create the collection!
-                            if type == "collections (kvstore definition)" and attribName.find("accelrated_fields") == 0:
+                            if obj_type == "collections (kvstore definition)" and attribName.find("accelrated_fields") == 0:
                                 attribName = "accelerated_fields" + attribName[17:]
 
                             #Hack to deal with datamodel tables not working as expected
-                            if attribName == "description" and type=="datamodels" and \
+                            if attribName == "description" and obj_type=="datamodels" and \
                                 "dataset.type" in info and info["dataset.type"] == "table":
                                 #For an unknown reason the table datatype has extra fields in the description
                                 # which must be removed however we have to find them first...
@@ -869,12 +878,37 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                             #A hack related to automatic lookups, where a None / empty value must be sent through
                             # as "", otherwise requests will strip the entry from the post request. In the case of
                             # an automatic lookup we want to send through the empty value...
-                            elif type=="automatic lookup" and theAttribute.text == None:
+                            elif obj_type=="automatic lookup" and theAttribute.text == None:
                                 info[attribName] = ""
             #If we have not set the keep flag to False
             if keep:
                 # Store the complete ACL information
                 info["acl_info"] = acl_info
+
+                # Exclude default properties as they do not need to be set (as this just causes configuration file bloat, particular in savedsearches)
+                if args.skipDefaults == "destination":
+                    url = f"{splunk_rest_dest}/services/properties/{obj_type}/default?output_mode=json"
+                    res = make_request(url, method='get', auth_type=args.destAuthtype, username=destUsername,
+                    password=destPassword, token=args.destToken, verify=False).json()
+                elif args.skipDefaults == "source":
+                    url = f"{splunk_rest}/services/properties/{obj_type}/default?output_mode=json"
+                    res = make_request(url, method='get', auth_type=args.srcAuthtype, username=srcUsername,
+                    password=srcPassword, token=args.srcToken, verify=False).json()
+
+                default_values = {}
+
+                if args.skipDefaults == "none" or 'messages' in res and res['messages'][0]['text'].find(f"{obj_type} does not exist") != -1:
+                    pass
+                else:
+                    for entry in res['entry']:
+                        default_values[entry['name']] = entry['content']
+
+                #Some attributes are not used to create a new version so we remove them...(they may have been used above first so we kept them until now)
+                for attribName in default_values:
+                    if attribName in info and (info[attribName] == default_values[attribName]):
+                        logger.debug(f"Removing property {info[attribName]} from {info['name']} of type {obj_type} in app context "
+                            f"{app} with owner {info['owner']}")
+                        del info[attribName]
 
                 if nameOverride != "":
                     info["origName"] = info["name"]
@@ -882,29 +916,29 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                     # TODO: Hack to handle field extractions where they have an extra piece of
                     # info in the name, as in the name is prepended with EXTRACT-, REPORT- or
                     # LOOKUP-. We need to remove this before creating the new version.
-                    if type == "fieldextractions" and info["name"].find("EXTRACT-") == 0:
+                    if obj_type == "fieldextractions" and info["name"].find("EXTRACT-") == 0:
                         logger.debug(
-                            f"Overriding name of {info['name']} of type {type} in app context "
+                            f"Overriding name of {info['name']} of type {obj_type} in app context "
                             f"{app} with owner {info['owner']} to new name of {info['name'][8:]}"
                         )
                         info["name"] = info["name"][8:]
-                    elif type == "fieldextractions" and info["name"].find("REPORT-") == 0:
+                    elif obj_type == "fieldextractions" and info["name"].find("REPORT-") == 0:
                         logger.debug(
-                            f"Overriding name of {info['name']} of type {type} in app context "
+                            f"Overriding name of {info['name']} of type {obj_type} in app context "
                             f"{app} with owner {info['owner']} to new name of {info['name'][7:]}"
                         )
                         info["name"] = info["name"][7:]
-                    elif type == "automatic lookup" and info["name"].find("LOOKUP-") == 0:
+                    elif obj_type == "automatic lookup" and info["name"].find("LOOKUP-") == 0:
                         logger.debug(
-                            f"Overriding name of {info['name']} of type {type} in app context "
+                            f"Overriding name of {info['name']} of type {obj_type} in app context "
                             f"{app} with owner {info['owner']} to new name of {info['name'][7:]}"
                         )
                         info["name"] = info["name"][7:]
-                    elif type == "fieldaliases":
+                    elif obj_type == "fieldaliases":
                         newName = info["name"]
                         newName = newName[newName.find("FIELDALIAS-") + 11:]
                         logger.debug(
-                            f"Overriding name of {info['name']} of type {type} in app context "
+                            f"Overriding name of {info['name']} of type {obj_type} in app context "
                             f"{app} with owner {info['owner']} to new name of {newName}"
                         )
                         info["name"] = newName
@@ -920,25 +954,25 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
 
                 # REST API does not support the creation of null queue entries as tested in 7.0.5 and 7.2.1,
                 # these are also unused on search heads anyway so ignoring these with a warning
-                if type == "fieldtransformations" and "FORMAT" in info and info["FORMAT"] == "nullQueue":
+                if obj_type == "fieldtransformations" and "FORMAT" in info and info["FORMAT"] == "nullQueue":
                     logger.warning(
-                        f"Dropping the transfer of {info['name']} of type {type} in app context "
+                        f"Dropping the transfer of {info['name']} of type {obj_type} in app context "
                         f"{app} with owner {info['owner']} because nullQueue entries cannot be "
                         f"created via REST API (and they are not required in search heads)"
                     )
                 else:
                     infoList[sharing].append(info)
                     logger.info(
-                        f"Recording {type} info for {info['name']} in app context {app} "
+                        f"Recording {obj_type} info for {info['name']} in app context {app} "
                         f"with owner {info['owner']}"
                     )
 
                 # If we are migrating but leaving the old app enabled in a previous environment
                 # we may not want to leave the report and/or alert enabled
-                if disableAlertsOrReportsOnMigration and type == "savedsearches":
+                if disableAlertsOrReportsOnMigration and obj_type == "savedsearches":
                     if "disabled" in info and info["disabled"] == "0" and "alert_condition" in info:
                         logger.info(
-                            f"{type} of type {info['name']} (alert) in app {app} with owner "
+                            f"{obj_type} of type {info['name']} (alert) in app {app} with owner "
                             f"{info['owner']} was enabled but disableAlertsOrReportOnMigration set, "
                             f"setting to disabled"
                         )
@@ -947,11 +981,10 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                             info["is_scheduled"] == "1":
                         info["is_scheduled"] = 0
                         logger.info(
-                            f"{type} of type {info['name']} (scheduled report) in app {app} with "
+                            f"{obj_type} of type {info['name']} (scheduled report) in app {app} with "
                             f"owner {info['owner']} was enabled but disableAlertsOrReportOnMigration "
                             f"set, setting to disabled"
                         )
-
     app = destApp
 
     # Cycle through each one we need to migrate. We process global/app/user
@@ -959,31 +992,31 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
     # everything at user level first then re-own it, so global/app must happen first.
     if "global" in infoList:
         logger.debug(
-            f"Now running runQueriesPerList with knowledge objects of type {type} "
+            f"Now running runQueriesPerList with knowledge objects of type {obj_type} "
             f"with global level sharing in app {app}"
         )
         runQueriesPerList(
-            infoList["global"], destOwner, type, override, app, splunk_rest_dest,
+            infoList["global"], destOwner, obj_type, override, app, splunk_rest_dest,
             endpoint, actionResults, overrideAlways
         )
 
     if "app" in infoList:
         logger.debug(
-            f"Now running runQueriesPerList with knowledge objects of type {type} "
+            f"Now running runQueriesPerList with knowledge objects of type {obj_type} "
             f"with app level sharing in app {app}"
         )
         runQueriesPerList(
-            infoList["app"], destOwner, type, override, app, splunk_rest_dest,
+            infoList["app"], destOwner, obj_type, override, app, splunk_rest_dest,
             endpoint, actionResults, overrideAlways
         )
 
     if "user" in infoList:
         logger.debug(
-            f"Now running runQueriesPerList with knowledge objects of type {type} "
+            f"Now running runQueriesPerList with knowledge objects of type {obj_type} "
             f"with user (private) level sharing in app {app}"
         )
         runQueriesPerList(
-            infoList["user"], destOwner, type, override, app, splunk_rest_dest,
+            infoList["user"], destOwner, obj_type, override, app, splunk_rest_dest,
             endpoint, actionResults, overrideAlways
         )
 
@@ -995,7 +1028,7 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
 #   Runs the required queries to create the knowledge object and then re-owns them to the correct user
 #
 ###########################
-def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest, endpoint, 
+def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_dest, endpoint, 
                       actionResults, overrideAlways):
     # Cache for users we've already checked/created
     checked_users = set()
@@ -1048,13 +1081,13 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             origName = anInfo['origName']
             del anInfo['origName']
             logger.debug(
-                f"{name} of type {type} overriding name from {name} to {origName} "
+                f"{name} of type {obj_type} overriding name from {name} to {origName} "
                 f"due to origName existing in config dictionary"
             )
             objURL = f"{splunk_rest_dest}/servicesNS/-/{app}/{endpoint}/{origName}?output_mode=json"
         else:
             # datamodels do not allow /-/ (or private / user level sharing, only app level)
-            if type == "datamodels":
+            if obj_type == "datamodels":
                 objURL = (
                     f"{splunk_rest_dest}/servicesNS/{owner}/{app}/{endpoint}/"
                     f"{encoded_name}?output_mode=json"
@@ -1064,7 +1097,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                     f"{splunk_rest_dest}/servicesNS/-/{app}/{endpoint}/"
                     f"{encoded_name}?output_mode=json"
                 )
-        logger.debug(f"{name} of type {type} checking on URL {objURL} to see if it exists")
+        logger.debug(f"{name} of type {obj_type} checking on URL {objURL} to see if it exists")
 
         # Verify=false is hardcoded to workaround local SSL issues
         res = make_request(
@@ -1094,13 +1127,13 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 appContext = entry['acl']['app']
                 updatedStr = entry['updated']
                 remoteObjOwner = entry['acl']['owner']
-                updated = determineTime(updatedStr, name, app, type)
+                updated = determineTime(updatedStr, name, app, obj_type)
 
                 if (appContext == app and (sharing == 'app' or sharing == 'global') and
                         (sharingLevel == 'app' or sharingLevel == 'global')):
                     objExists = True
                     logger.debug(
-                        f"name {name} of type {type} in app context {app} found to "
+                        f"name {name} of type {obj_type} in app context {app} found to "
                         f"exist on url {objURL} with sharing of {sharingLevel}, "
                         f"updated time of {updated}"
                     )
@@ -1108,33 +1141,33 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                     sharingLevel == "user" and remoteObjOwner == owner):
                     objExists = True
                     logger.debug(
-                        f"name {name} of type {type} in app context {app} found to "
+                        f"name {name} of type {obj_type} in app context {app} found to "
                         f"exist on url {objURL} with sharing of {sharingLevel}, "
                         f"updated time of {updated}"
                     )
                 elif (appContext == app and sharingLevel == "user" and
                     remoteObjOwner == owner and (sharing == "app" or sharing == "global")):
                     logger.debug(
-                        f"name {name} of type {type} in app context {app} found to "
+                        f"name {name} of type {obj_type} in app context {app} found to "
                         f"exist on url {objURL} with sharing of {sharingLevel}, "
                         f"updated time of {updated}"
                     )
                 else:
                     logger.debug(
-                        f"name {name} of type {type} in app context {app}, found the "
+                        f"name {name} of type {obj_type} in app context {app}, found the "
                         f"object with this name in sharingLevel {sharingLevel} and "
                         f"appContext {appContext}, updated time of {updated}, url {objURL}"
                     )        
 
         #Hack to handle the times (conf-times) not including required attributes for creation in existing entries
         #not sure how this happens but it fails to create in 7.0.5 but works fine in 7.2.x, fixing for the older versions
-        if type == "times (conf-times)" and "is_sub_menu" not in payload:
+        if obj_type == "times (conf-times)" and "is_sub_menu" not in payload:
             payload["is_sub_menu"] = "0"
 
         if sharing == 'app' or sharing == 'global':
             url = f"{splunk_rest_dest}/servicesNS/nobody/{app}/{endpoint}"
             logger.info(
-                f"name {name} of type {type} in app context {app}, sharing level is "
+                f"name {name} of type {obj_type} in app context {app}, sharing level is "
                 f"non-user so creating with nobody context updated url is {url}"
             )
             createdInAppContext = True
@@ -1142,7 +1175,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
         deletionURL = None
         if objExists is False:
             logger.debug(
-                f"Attempting to create {type} with name {name} on URL {url} with "
+                f"Attempting to create {obj_type} with name {name} on URL {url} with "
                 f"payload '{payload}' in app {app}"
             )
             res = make_request(
@@ -1151,14 +1184,14 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             )
             if (res.status_code != requests.codes.ok and res.status_code != 201):
                 logger.error(
-                    f"{name} of type {type} with URL {url} status code {res.status_code} "
+                    f"{name} of type {obj_type} with URL {url} status code {res.status_code} "
                     f"reason {res.reason}, response '{res.text}', in app {app}, owner {owner}"
                 )
                 appendToResults(actionResults, 'creationFailure', name)
                 continue
             else:
                 logger.debug(
-                    f"{name} of type {type} in app {app} with URL {url} result is: "
+                    f"{name} of type {obj_type} in app {app} with URL {url} result is: "
                     f"'{res.text}' owner of {owner}"
                 )
 
@@ -1176,7 +1209,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                         if innerChild.tag.endswith("link") and innerChild.attrib["rel"] == "list":
                             deletionURL = f"{splunk_rest_dest}/{innerChild.attrib['href']}"
                             logger.debug(
-                                f"{name} of type {type} in app {app} recording deletion "
+                                f"{name} of type {obj_type} in app {app} recording deletion "
                                 f"URL as {deletionURL}"
                             )
                             appendToResults(actionResults, 'creationSuccess', deletionURL)
@@ -1186,7 +1219,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                         if (innerChild.tag.endswith("msg") and
                                 (innerChild.attrib["type"] == "ERROR" or "WARN" in innerChild.attrib)):
                             logger.warning(
-                                f"{name} of type {type} in app {app} had a warn/error "
+                                f"{name} of type {obj_type} in app {app} had a warn/error "
                                 f"message of '{innerChild.text}' owner of {owner}"
                             )
                             # Sometimes the object appears to be created but is unusable,
@@ -1195,7 +1228,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                             appendToResults(actionResults, 'creationFailure', name)
             if not deletionURL:
                 logger.warning(
-                    f"{name} of type {type} in app {app} did not appear to create "
+                    f"{name} of type {obj_type} in app {app} did not appear to create "
                     f"correctly, will not attempt to change the ACL of this item"
                 )
                 continue
@@ -1203,7 +1236,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             url = f"{deletionURL}/acl"
             payload = {"owner": owner, "sharing": sharing}
             logger.info(
-                f"Attempting to change ownership of {type} with name {name} via URL {url} "
+                f"Attempting to change ownership of {obj_type} with name {name} via URL {url} "
                 f"to owner {owner} in app {app} with sharing {sharing}"
             )
             res = make_request(
@@ -1214,16 +1247,16 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             # If re-own fails consider this a failure that requires investigation
             if (res.status_code != requests.codes.ok):
                 logger.error(
-                    f"{name} of type {type} in app {app} with URL {url} status code "
+                    f"{name} of type {obj_type} in app {app} with URL {url} status code "
                     f"{res.status_code} reason {res.reason}, response '{res.text}', "
                     f"owner of {owner}"
                 )
                 appendToResults(actionResults, 'creationFailure', name)
                 if res.status_code == 409:
-                    if type == "eventtypes":
+                    if obj_type == "eventtypes":
                         logger.warning(
                             f"Received a 409 while changing the ACL permissions of {name} "
-                            f"of type {type} in app {app} with URL {url}, however "
+                            f"of type {obj_type} in app {app} with URL {url}, however "
                             f"eventtypes throw this error and work anyway. Ignoring!"
                         )
                         continue
@@ -1231,7 +1264,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                     url = url[:-4]
                     logger.warning(
                         f"Deleting the private object as it could not be re-owned {name} "
-                        f"of type {type} in app {app} with URL {url}"
+                        f"of type {obj_type} in app {app} with URL {url}"
                     )
                     make_request(
                         url, method='delete', auth_type=args.destAuthtype,
@@ -1244,7 +1277,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 continue
             else:
                 logger.debug(
-                    f"{name} of type {type} in app {app}, ownership changed. Response: "
+                    f"{name} of type {obj_type} in app {app}, ownership changed. Response: "
                     f"{res.text}. Will update deletion URL. Owner: {owner}, Sharing: {sharing}"
                 )
 
@@ -1259,7 +1292,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                             if innerChild.tag.endswith("link") and innerChild.attrib["rel"]=="list":
                                 deletionURL = f"{splunk_rest_dest}/{innerChild.attrib['href']}"
                                 logger.debug(
-                                    f"{name} of type {type} in app {app} recording new deletion URL: {deletionURL}. "
+                                    f"{name} of type {obj_type} in app {app} recording new deletion URL: {deletionURL}. "
                                     f"Owner: {owner}, Sharing: {sharing}"
                                 )
                                 #Remove our last recorded URL
@@ -1267,11 +1300,11 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                                 appendToResults(actionResults, 'creationSuccess', deletionURL)
             if creationSuccessRes:
                 logger.info(
-                    f"Created {name} of type {type} in app {app}. Owner: {owner}, Sharing: {sharing}"
+                    f"Created {name} of type {obj_type} in app {app}. Owner: {owner}, Sharing: {sharing}"
                 )
             else:
                 logger.warning(
-                    f"Attempted to create {name} of type {type} in app {app} (Owner: {owner}, Sharing: {sharing}) "
+                    f"Attempted to create {name} of type {obj_type} in app {app} (Owner: {owner}, Sharing: {sharing}) "
                     f"but failed"
                 )
         else:
@@ -1281,7 +1314,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 # then do not continue with the override. If we have overrideAlways we blindly overwrite.
                 if override and curUpdated <= updated:
                     logger.info(
-                        f"{name} of type {type} in app {app} with URL {objURL}, owner {owner}, "
+                        f"{name} of type {obj_type} in app {app} with URL {objURL}, owner {owner}, "
                         f"source object says time of {curUpdated}, destination object says time of "
                         f"{updated}, skipping this entry"
                     )
@@ -1289,7 +1322,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                     continue
                 else:
                     logger.info(
-                        f"{name} of type {type} in app {app} with URL {objURL}, owner {owner}, "
+                        f"{name} of type {obj_type} in app {app} with URL {objURL}, owner {owner}, "
                         f"source object says time of {curUpdated}, destination object says time of "
                         f"{updated}, will update this entry"
                     )
@@ -1314,7 +1347,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 # Remove the name from the payload
                 del payload['name']
                 logger.debug(
-                    f"Attempting to update {type} with name {name} on URL {url} with "
+                    f"Attempting to update {obj_type} with name {name} on URL {url} with "
                     f"payload '{payload}' in app {app}"
                 )
                 res = make_request(
@@ -1323,13 +1356,13 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                 )
                 if res.status_code != requests.codes.ok and res.status_code != 201:
                     logger.error(
-                        f"{name} of type {type} with URL {url} status code {res.status_code} "
+                        f"{name} of type {obj_type} with URL {url} status code {res.status_code} "
                         f"reason {res.reason}, response '{res.text}', in app {app}, owner {owner}"
                     )
                     appendToResults(actionResults, 'updateFailure', name)
                 else:
                     logger.debug(
-                        f"Post-update of {name} of type {type} in app {app} with URL {url} "
+                        f"Post-update of {name} of type {obj_type} in app {app} with URL {url} "
                         f"result is: '{res.text}' owner of {owner}"
                     )
                     appendToResults(actionResults, 'updateSuccess', name)
@@ -1340,7 +1373,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
                     payload = {"owner": owner, "sharing": sharing}
                     logger.info(
                         f"App or Global sharing in use, attempting to change ownership of "
-                        f"{type} with name {name} via URL {url} to owner {owner} in app "
+                        f"{obj_type} with name {name} via URL {url} to owner {owner} in app "
                         f"{app} with sharing {sharing}"
                     )
                     res = make_request(
@@ -1350,7 +1383,7 @@ def runQueriesPerList(infoList, destOwner, type, override, app, splunk_rest_dest
             else:
                 appendToResults(actionResults, 'creationSkip', objURL)
                 logger.info(
-                    f"{name} of type {type} in app {app} owner of {owner}, object already "
+                    f"{name} of type {obj_type} in app {app} owner of {owner}, object already "
                     f"exists and override is not set, nothing to do here"
                 )
 
