@@ -220,7 +220,7 @@ parser.add_argument('-srcToken',
 parser.add_argument('-destToken',
                     help='(optional) token to use for REST API of destURL argument (required if destAuthtype=token)')
 parser.add_argument('-skipDefaults', 
-                    help='(optional) the endpoint /services/properties/<type>/default can be used to list default options. Can set this to skip source, destination or none to disable the skipping of these attributes',
+                    help='(optional) the endpoint /services/properties/<type>/default can be used to list default options. Can set this to skip source, destination or none to disable the skipping of these attributes. Only works for savedsearches',
                     choices=['source','destination','none'],
                     default='destination')
 
@@ -885,19 +885,20 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                 # Store the complete ACL information
                 info["acl_info"] = acl_info
 
-                # Exclude default properties as they do not need to be set (as this just causes configuration file bloat, particular in savedsearches)
-                if args.skipDefaults == "destination":
+                # Exclude default properties as they do not need to be set (as this just causes configuration file bloat in savedsearches)
+                # This endpoint appears to only work for savedsearches
+                if args.skipDefaults == "destination" and obj_type == "savedsearches":
                     url = f"{splunk_rest_dest}/services/properties/{obj_type}/default?output_mode=json"
                     res = make_request(url, method='get', auth_type=args.destAuthtype, username=destUsername,
                     password=destPassword, token=args.destToken, verify=False).json()
-                elif args.skipDefaults == "source":
+                elif args.skipDefaults == "source" and obj_type == "savedsearches":
                     url = f"{splunk_rest}/services/properties/{obj_type}/default?output_mode=json"
                     res = make_request(url, method='get', auth_type=args.srcAuthtype, username=srcUsername,
                     password=srcPassword, token=args.srcToken, verify=False).json()
 
                 default_values = {}
 
-                if args.skipDefaults == "none" or 'messages' in res and res['messages'][0]['text'].find(f"{obj_type} does not exist") != -1:
+                if args.skipDefaults == "none" or obj_type != "savedsearches" or 'messages' in res and res['messages'][0]['text'].find(f"{obj_type} does not exist") != -1:
                     pass
                 else:
                     for entry in res['entry']:
