@@ -223,7 +223,9 @@ parser.add_argument('-skipDefaults',
                     help='(optional) the endpoint /services/properties/<type>/default can be used to list default options. Can set this to skip source, destination or none to disable the skipping of these attributes. Only works for savedsearches',
                     choices=['source','destination','none'],
                     default='destination')
+parser.add_argument('-enableSleep', help='(optional) This is useful for SHC members and load balancer endpoints. If you cannot hit the same backend each time you have to wait for the object to replicate prior to hitting the /acl endpoint. This enables a 10 second sleep post-object creation',action='store_true')
 
+enable_sleep_time = 10
 args = parser.parse_args()
 
 # If we want debugMode, keep the debug logging, otherwise drop back to INFO level
@@ -479,7 +481,6 @@ def set_app_acl(host, port, auth_type, username, password, token, app_name, acl_
 
     # Get the owner from ACL info
     owner = acl_info.get('owner', 'nobody')
-
     # Check and create the owner user if needed (unless it's 'nobody')
     if owner != 'nobody':
         user_exists = check_and_create_user(host, port, auth_type, username, password, token, owner)
@@ -800,25 +801,27 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                                 elif theList.attrib['name'] == 'perms':
                                     if 'perms' not in acl_info:
                                         acl_info['perms'] = {}
-                                    for perm in theList:
-                                        if not 'name' in perm.attrib:
-                                            # empty?
-                                            continue
-                                        elif perm.attrib['name'] == 'read':
-                                            read_perms = []
-                                            for item in perm:
-                                                read_perms.append(item.text)
-                                            acl_info['perms']['read'] = read_perms
-                                            logger.debug(f"{info['name']} of type {obj_type} has read permissions "
-                                                         f"{read_perms} in app {app}")
-                                        elif perm.attrib['name'] == 'write':
-                                            write_perms = []
-                                            for item in perm:
-                                                write_perms.append(item.text)
-                                            acl_info['perms']['write'] = write_perms
-                                            logger.debug(f"{info['name']} of type {obj_type} has write permissions "
-                                                         f"{write_perms} in app {app}")
-
+                                    # if we have any permissions set
+                                    if len(theList) > 0:
+                                        for permEntry in theList:
+                                            for perm in permEntry:
+                                                if not 'name' in perm.attrib:
+                                                    # empty?
+                                                    continue
+                                                elif perm.attrib['name'] == 'read':
+                                                    read_perms = []
+                                                    for item in perm[0]:
+                                                        read_perms.append(item.text)
+                                                    acl_info['perms']['read'] = read_perms
+                                                    logger.debug(f"{info['name']} of type {obj_type} has read permissions "
+                                                                 f"{read_perms} in app {app}")
+                                                elif perm.attrib['name'] == 'write':
+                                                    write_perms = []
+                                                    for item in perm[0]:
+                                                        write_perms.append(item.text)
+                                                    acl_info['perms']['write'] = write_perms
+                                                    logger.debug(f"{info['name']} of type {obj_type} has write permissions "
+                                                                f"{write_perms} in app {app}")
                         else:
                             #We have other attributes under content, we want the majority of them
                             attribName = theAttribute.attrib['name']
@@ -1236,10 +1239,24 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
             # Re-owning it to the previous owner
             url = f"{deletionURL}/acl"
             payload = {"owner": owner, "sharing": sharing}
-            logger.info(
-                f"Attempting to change ownership of {obj_type} with name {name} via URL {url} "
-                f"to owner {owner} in app {app} with sharing {sharing}"
-            )
+
+            if args.enableSleep:
+                logger.info(f"Sleeping {enable_sleep_time} seconds before hitting ACL endpoint")
+                time.sleep(enable_sleep_time)
+
+            log_string = f"Attempting to change ownership of {obj_type} with name {name} via URL {url} " \
+                         f"to owner {owner} in app {app} with sharing {sharing}"
+
+            # if we stored permission info for the object, set the permission info on the object
+            if 'perms' in acl_info:
+                if 'read' in acl_info['perms']:
+                    payload['perms.read'] = ",".join(acl_info['perms']['read'])
+                    log_string = f"{log_string} perms.read={payload['perms.read']}"
+                if 'write' in acl_info['perms']:
+                    payload['perms.write'] = ",".join(acl_info['perms']['write'])
+                    log_string = f"{log_string} perms.write={payload['perms.write']}"
+
+            logger.info(log_string)
             res = make_request(
                 url, method='post', auth_type=args.destAuthtype, username=destUsername,
                 password=destPassword, token=args.destToken, data=payload, verify=False
@@ -1372,11 +1389,25 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
                 if sharing != "user":
                     url = f"{url}/acl"
                     payload = {"owner": owner, "sharing": sharing}
-                    logger.info(
-                        f"App or Global sharing in use, attempting to change ownership of "
-                        f"{obj_type} with name {name} via URL {url} to owner {owner} in app "
-                        f"{app} with sharing {sharing}"
-                    )
+
+                    if args.enableSleep:
+                        logger.info(f"Sleeping {enable_sleep_time} seconds before hitting ACL endpoint")
+                        time.sleep(enable_sleep_time)
+
+                    log_line = f"App or Global sharing in use, attempting to change ownership of " \
+                               f"{obj_type} with name {name} via URL {url} to owner {owner} in app " \
+                               f"{app} with sharing {sharing}"
+
+                    # if we stored permission info for the object, set the permission info on the object
+                    if 'perms' in acl_info:
+                        if 'read' in acl_info['perms']:
+                            payload['perms.read'] = ",".join(acl_info['perms']['read'])
+                            log_line = f"{log_line} perms.read={payload['perms.read']}"
+                        if 'write' in acl_info['perms']:
+                            payload['perms.write'] = ",".join(acl_info['perms']['write'])
+                            log_line = f"{log_line} perms.write={payload['perms.write']}"
+
+                    logger.info(log_line)
                     res = make_request(
                         url, method='post', auth_type=args.destAuthtype, username=destUsername,
                         password=destPassword, token=args.destToken, data=payload, verify=False
@@ -1866,10 +1897,24 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
                     f"conf-macros/{encoded_name}/acl"
                 )
                 payload = {"owner": owner, "sharing": sharing}
-                logger.info(
-                    f"Attempting to change ownership of macro {name} via URL {url} "
-                    f"to owner {owner} in app {app} with sharing {sharing}"
-                )
+
+                if args.enableSleep:
+                    logger.info(f"Sleeping {enable_sleep_time} seconds before hitting ACL endpoint")
+                    time.sleep(enable_sleep_time)
+
+                log_str = f"Attempting to change ownership of macro {name} via URL {url} " \
+                          f"to owner {owner} in app {app} with sharing {sharing}"
+
+                # if we stored permission info for the object, set the permission info on the object
+                if 'perms' in acl_info:
+                    if 'read' in acl_info['perms']:
+                        payload['perms.read'] = ",".join(acl_info['perms']['read'])
+                        log_str = f"{log_str} perms.read={payload['perms.read']}"
+                    if 'write' in acl_info['perms']:
+                        payload['perms.write'] = ",".join(acl_info['perms']['write'])
+                        log_str = f"{log_str} perms.write={payload['perms.write']}"
+
+                logger.info(log_str)
                 res = make_request(
                     url, method='post', auth_type=args.destAuthtype,
                     username=destUsername, password=destPassword,
@@ -2422,7 +2467,7 @@ includeOwner = None
 if args.includeOwner:
     includeOwner = [x.strip() for x in args.includeOwner.split(',')]
 
-excludedList = ["srcPassword", "destPassword"]
+excludedList = ["srcPassword", "destPassword", "srcToken", "destToken"]
 cleanArgs = without_keys(vars(args), excludedList)
 logger.info(f"transfer splunk knowledge objects run with arguments {cleanArgs}")
 
