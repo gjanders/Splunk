@@ -1661,7 +1661,6 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
                 # Add this to the infoList
                 sharing = macroInfo["sharing"]
                 macroInfo["acl_info"] = acl_info
-                logger.warning(f"Recording acl_info {acl_info} name={macroInfo['name']}")
                 if sharing not in macros:
                     macros[sharing] = []
                 macros[sharing].append(macroInfo)
@@ -1725,7 +1724,6 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         curUpdated = aMacro["updated"]
         del aMacro["updated"]
         acl_info = aMacro.get("acl_info", {})  # Get stored ACL info
-        logger.warn(f"ACL info is {acl_info} with name {name}")
         # acl_info cannot be posted to the endpoint
         if "acl_info" in aMacro:
             del aMacro["acl_info"]
@@ -1752,7 +1750,10 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
 
             checked_users.add(owner)
 
-        url = f"{splunk_rest_dest}/servicesNS/{owner}/{app}/properties/macros"
+        if sharing == "user":
+            url = f"{splunk_rest_dest}/servicesNS/{owner}/{app}/properties/macros"
+        else:
+            url = f"{splunk_rest_dest}/servicesNS/nobody/{app}/properties/macros"
 
         encoded_name = urllib.parse.quote(name.encode('utf-8'))
         encoded_name = encoded_name.replace("/", "%2F")
@@ -1791,6 +1792,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
                 updatedStr = entry['updated']
                 updated = determineTime(updatedStr, name, app, "macro")
                 remoteObjOwner = entry['acl']['owner']
+                #obj_update_url = entry['links']['list']
                 logger.info(
                     f"sharing level {sharing}, app context {appContext}, "
                     f"remoteObjOwner {remoteObjOwner}, app {app}"
@@ -1798,6 +1800,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
                 if appContext == app and (sharing == 'app' or sharing == 'global') and \
                    (sharingLevel == 'app' or sharingLevel == 'global'):
                     objExists = True
+                    createdInAppContext = True
                     logger.debug(
                         f"name {name} of type macro in app context {app} found to "
                         f"exist on url {objURL} with sharing of {sharingLevel}, "
@@ -1851,7 +1854,9 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
             createOrUpdate = "update"
             url = url + "/" + encoded_name
         else:
-            createOrUpdate = "create"
+            createOrUpdate = "create" 
+            if sharing != "user":
+                createdInAppContext = True
 
         logger.info(
             f"Attempting to {createOrUpdate} macro {name} on URL with name {url} "
@@ -1898,7 +1903,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
                     f"conf-macros/{name}"
                 )
                 logger.debug(
-                    f"{name} of type macro in app {app} recording deletion URL as "
+                    f"{name} of typemacro in app {app} recording deletion URL as "
                     f"{deletionURL} with owner {owner}"
                 )
                 appendToResults(macroResults, 'creationSuccess', deletionURL)
@@ -1909,6 +1914,9 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
             )
 
         payload = {}
+
+        logger.info(f"Sleeping {enable_sleep_time} seconds before updating the macro")
+        time.sleep(enable_sleep_time)
 
         # Remove parts that cannot be posted to the REST API, sharing/owner we change later
         del aMacro["sharing"]
@@ -1952,82 +1960,88 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
 
             macroCreationSuccessRes = False
         else:
-            if not createdInAppContext:
-                # Re-owning it, I've switched URL's again here but it seems to be working
-                # so will not change it
+            # Re-owning it, I've switched URL's again here but it seems to be working
+            # so will not change it
+            if sharing == "user": 
                 url = (
                     f"{splunk_rest_dest}/servicesNS/{owner}/{app}/configs/"
                     f"conf-macros/{encoded_name}/acl"
                 )
-                payload = {"owner": owner, "sharing": sharing}
-
-                if args.enableSleep:
-                    logger.info(f"Sleeping {enable_sleep_time} seconds before hitting ACL endpoint")
-                    time.sleep(enable_sleep_time)
-
-                log_str = f"Attempting to change ownership of macro {name} via URL {url} " \
-                          f"to owner {owner} in app {app} with sharing {sharing}"
-
-                # if we stored permission info for the object, set the permission info on the object
-                if 'perms' in acl_info:
-                    if 'read' in acl_info['perms']:
-                        payload['perms.read'] = ",".join(acl_info['perms']['read'])
-                        log_str = f"{log_str} perms.read={payload['perms.read']}"
-                    if 'write' in acl_info['perms']:
-                        payload['perms.write'] = ",".join(acl_info['perms']['write'])
-                        log_str = f"{log_str} perms.write={payload['perms.write']}"
-
-                logger.info(log_str)
-                res = make_request(
-                    url, method='post', auth_type=args.destAuthtype,
-                    username=destUsername, password=destPassword,
-                    token=args.destToken, data=payload, verify=False
+            else:
+                url = (
+                    f"{splunk_rest_dest}/servicesNS/nobody/{app}/configs/"
+                    f"conf-macros/{encoded_name}/acl"
                 )
-                if (res.status_code != requests.codes.ok):
-                    logger.error(
-                        f"{name} of type macro in app {app} with URL {url} status "
-                        f"code {res.status_code} reason {res.reason}, response "
-                        f"'{res.text}', owner {owner} sharing level {sharing}"
+            #url = (
+            #    f"{splunk_rest_dest}/servicesNS/{owner}/{app}/admin/"
+            #    f"macros/{encoded_name}/acl"
+            #)
+            payload = {"owner": owner, "sharing": sharing}
+
+            if args.enableSleep:
+                logger.info(f"Sleeping {enable_sleep_time} seconds before hitting ACL endpoint")
+                time.sleep(enable_sleep_time)
+
+            log_str = f"Attempting to change ownership of macro {name} via URL {url} " \
+                      f"to owner {owner} in app {app} with sharing {sharing}"
+
+            # if we stored permission info for the object, set the permission info on the object
+            if 'perms' in acl_info:
+                if 'read' in acl_info['perms']:
+                    payload['perms.read'] = ",".join(acl_info['perms']['read'])
+                    log_str = f"{log_str} perms.read={payload['perms.read']}"
+                if 'write' in acl_info['perms']:
+                    payload['perms.write'] = ",".join(acl_info['perms']['write'])
+                    log_str = f"{log_str} perms.write={payload['perms.write']}"
+
+            logger.info(log_str)
+            res = make_request(
+                url, method='post', auth_type=args.destAuthtype,
+                username=destUsername, password=destPassword,
+                token=args.destToken, data=payload, verify=False
+            )
+            if (res.status_code != requests.codes.ok):
+                logger.error(
+                    f"{name} of type macro in app {app} with URL {url} status "
+                    f"code {res.status_code} reason {res.reason}, response "
+                    f"'{res.text}', owner {owner} sharing level {sharing}"
+                )
+                # Hardcoded deletion URL as if this fails it should be this URL...
+                # (not parsing the XML here to confirm but this works fine)
+                deletionURL = (
+                    f"{splunk_rest_dest}/servicesNS/{owner}/{app}/configs/"
+                    f"conf-macros/{name}"
+                )
+                logger.info(
+                    f"{name} of type macro in app {app} recording deletion URL "
+                    f"as user URL due to change ownership failure {deletionURL}"
+                )
+                # Remove the old record
+                if not objExists:
+                    popLastResult(macroResults, 'macroCreationSuccess')
+                    macroCreationSuccessRes = False
+                    url = url[:-4]
+                    logger.warning(
+                        f"Deleting the private object as it could not be modified "
+                        f"{name} of type macro in app {app} with URL {url}"
                     )
-                    # Hardcoded deletion URL as if this fails it should be this URL...
-                    # (not parsing the XML here to confirm but this works fine)
-                    deletionURL = (
-                        f"{splunk_rest_dest}/servicesNS/{owner}/{app}/configs/"
-                        f"conf-macros/{name}"
+                    make_request(
+                        url, method='delete', auth_type=args.destAuthtype,
+                        username=destUsername, password=destPassword,
+                        token=args.destToken, verify=False
                     )
-                    logger.info(
-                        f"{name} of type macro in app {app} recording deletion URL "
-                        f"as user URL due to change ownership failure {deletionURL}"
-                    )
-                    # Remove the old record
-                    if not objExists:
-                        popLastResult(macroResults, 'macroCreationSuccess')
-                        macroCreationSuccessRes = False
-                        url = url[:-4]
-                        logger.warning(
-                            f"Deleting the private object as it could not be modified "
-                            f"{name} of type macro in app {app} with URL {url}"
-                        )
-                        make_request(
-                            url, method='delete', auth_type=args.destAuthtype,
-                            username=destUsername, password=destPassword,
-                            token=args.destToken, verify=False
-                        )
-                        appendToResults(macroResults, 'creationFailure', name)
-                    else:
-                        appendToResults(macroResults, 'updateFailure', name)
-                        macroCreationSuccessRes = False
+                    appendToResults(macroResults, 'creationFailure', name)
                 else:
-                    macroCreationSuccessRes = True
-                    logger.debug(
-                        f"{name} of type macro in app {app}, ownership changed with "
-                        f"response '{res.text}', new owner {owner} and sharing level {sharing}"
-                    )
-                    if objExists:
-                        appendToResults(macroResults, 'updateSuccess', name)
+                    appendToResults(macroResults, 'updateFailure', name)
+                    macroCreationSuccessRes = False
             else:
                 macroCreationSuccessRes = True
-                appendToResults(macroResults, 'updateSuccess', name)
+                logger.debug(
+                    f"{name} of type macro in app {app}, ownership changed with "
+                    f"response '{res.text}', new owner {owner} and sharing level {sharing}"
+                )
+                if objExists:
+                    appendToResults(macroResults, 'updateSuccess', name)
 
         if macroCreationSuccessRes:
             logger.info(
