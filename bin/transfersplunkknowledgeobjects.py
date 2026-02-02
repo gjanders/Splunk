@@ -296,7 +296,6 @@ splunk_rest = args.srcURL
 # Destination server
 splunk_rest_dest = args.destURL
 
-
 def make_request(url, method='get', auth_type='password', username='', password='', token='', data=None, verify=False):
     """
     Centralized function to make HTTP requests with either token or password authentication.
@@ -648,6 +647,26 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
     # Keep a success/failure list to be returned by this function
     # actionResults = {}
 
+    # for savedsearches we have visualizations, some older visualizations add in a display.visualizations.custom.leaflet_maps_app.maps-plus.<attribute>
+    # entry even if the visualization in question is not in use or set to the defaults
+    # we can optimise out the defaults with a bit of work
+    visualization_defaults = {}
+    if obj_type == "savedsearches":
+        url = f"{splunk_rest}/services/properties/savedsearches/default?count=0&output_mode=json"
+        res = make_request(
+            url, method='get', auth_type=args.srcAuthtype, username=srcUsername,
+            password=srcPassword, token=args.srcToken, verify=False
+        )
+        if res.status_code != requests.codes.ok:
+            logger.error(
+                f"URL {url} in app {app} status code {res.status_code} reason "
+                f"{res.reason}, response: '{res.text}'"
+            )
+        for entry in res.json()['entry']:
+            if entry['name'].find("display.visualizations.custom") == 0:
+                logger.debug(f"Adding visualization defaults {entry['name']} = {entry['content']}")
+                visualization_defaults[entry['name']] = entry['content']
+
     # Use count=-1 to ensure we see all the objects
     url = f"{splunk_rest}/servicesNS/-/{app}{endpoint}?count=-1"
     logger.debug(f"Running requests.get() on {url} with username {srcUsername} in app {app}")
@@ -676,6 +695,7 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
             keep = True
             acl_info = {}  # Store complete ACL information
             for innerChild in child:
+                skip_visualizations = True
                 # title / name attribute
                 if innerChild.tag.endswith("title"):
                     title = innerChild.text
@@ -875,9 +895,17 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
 
                                 res = json.dumps(res)
                                 info[attribName] = res
+                            elif obj_type=="savedsearches" and attribName == "display.general.type" and theAttribute.text=="visualizations":
+                                skip_visualizations = False
+                                info[attribName] = theAttribute.text
                             #We keep the attributes that are not None
                             elif theAttribute.text:
-                                info[attribName] = theAttribute.text
+                                if skip_visualizations and attribName.find("display.visualizations.") == 0:
+                                    logger.debug(f"{info['name']} of type {obj_type} found key/value of f{attribName}={theAttribute.text} in app context {app} skipping as skip_visualizations is true")
+                                elif attribName.find("display.visualizations.") == 0 and attribName in visualization_defaults and visualization_defaults[attribName] == theAttribute.text:
+                                    logger.info(f"{info['name']} of type {obj_type} found key/value of f{attribName}={theAttribute.text} in app context {app} skipping as this is a default value")
+                                else:
+                                    info[attribName] = theAttribute.text
                             #A hack related to automatic lookups, where a None / empty value must be sent through
                             # as "", otherwise requests will strip the entry from the post request. In the case of
                             # an automatic lookup we want to send through the empty value...
@@ -1177,6 +1205,7 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
             createdInAppContext = True
 
         deletionURL = None
+ 
         if objExists is False:
             logger.debug(
                 f"Attempting to create {obj_type} with name {name} on URL {url} with "
