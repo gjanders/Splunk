@@ -1017,6 +1017,13 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                             f"owner {info['owner']} was enabled but disableAlertsOrReportOnMigration "
                             f"set, setting to disabled"
                         )
+                    elif "alert_condition" in info:
+                        logger.info(
+                            f"{obj_type} of type {info['name']} (alert) in app {app} with owner "
+                            f"{info['owner']} was enabled but disableAlertsOrReportOnMigration set, "
+                            f"setting to disabled"
+                        )
+                        info["disabled"] = 1
     app = destApp
 
     # Cycle through each one we need to migrate. We process global/app/user
