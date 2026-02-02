@@ -1484,6 +1484,7 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
             macroInfo = {}
             keep = True
             for innerChild in child:
+                acl_info = {}
                 # title is the name
                 if innerChild.tag.endswith("title"):
                     title = innerChild.text
@@ -1607,6 +1608,31 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
                                             )
                                             keep = False
                                             break
+                                # Capture read permissions
+                                elif theList.attrib['name'] == 'perms':
+                                    if 'perms' not in acl_info:
+                                        acl_info['perms'] = {}
+                                    # if we have any permissions set
+                                    if len(theList) > 0:
+                                        for permEntry in theList:
+                                            for perm in permEntry:
+                                                if not 'name' in perm.attrib:
+                                                    # empty?
+                                                    continue
+                                                elif perm.attrib['name'] == 'read':
+                                                    read_perms = []
+                                                    for item in perm[0]:
+                                                        read_perms.append(item.text)
+                                                    acl_info['perms']['read'] = read_perms
+                                                    logger.debug(f"{macroInfo['name']} of type macro has read permissions "
+                                                                 f"{read_perms} in app {app}")
+                                                elif perm.attrib['name'] == 'write':
+                                                    write_perms = []
+                                                    for item in perm[0]:
+                                                        write_perms.append(item.text)
+                                                    acl_info['perms']['write'] = write_perms
+                                                    logger.debug(f"{macroInfo['name']} of type macro has write permissions "
+                                                                f"{write_perms} in app {app}")
                         else:
                             # We have other attributes under content, we want the majority of them
                             attribName = theAttribute.attrib['name']
@@ -1632,9 +1658,10 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
                                 )
                                 macroInfo[attribName] = theAttribute.text
             if keep:
-
                 # Add this to the infoList
                 sharing = macroInfo["sharing"]
+                macroInfo["acl_info"] = acl_info
+                logger.warning(f"Recording acl_info {acl_info} name={macroInfo['name']}")
                 if sharing not in macros:
                     macros[sharing] = []
                 macros[sharing].append(macroInfo)
@@ -1697,6 +1724,11 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         owner = aMacro["owner"]
         curUpdated = aMacro["updated"]
         del aMacro["updated"]
+        acl_info = aMacro.get("acl_info", {})  # Get stored ACL info
+        logger.warn(f"ACL info is {acl_info} with name {name}")
+        # acl_info cannot be posted to the endpoint
+        if "acl_info" in aMacro:
+            del aMacro["acl_info"]
 
         if destOwner:
             owner = destOwner
@@ -1882,6 +1914,8 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         del aMacro["sharing"]
         del aMacro["name"]
         del aMacro["owner"]
+        del aMacro["eai:appName"]
+        del aMacro["eai:userName"]
         payload = aMacro
 
         if createOrUpdate == "create":
