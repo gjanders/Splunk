@@ -2287,7 +2287,7 @@ def datamodels(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
 def collections(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
                 excludeEntities, includeOwner, excludeOwner, privateOnly, override,
                 overrideAlways, actionResults):
-    ignoreList = ["eai:appName", "eai:userName", "type"]
+    ignoreList = ["eai:appName", "eai:userName", "type", "disabled"]
     # nobody is the only username that can be used when working with collections
     return runQueries(
         app, "/storage/collections/config", "collections (kvstore definition)",
