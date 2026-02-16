@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """
 transfersplunkknowledgeobjects.py
@@ -1002,14 +1002,15 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                 # If we are migrating but leaving the old app enabled in a previous environment
                 # we may not want to leave the report and/or alert enabled
                 if disableAlertsOrReportsOnMigration and obj_type == "savedsearches":
-                    if "disabled" in info and info["disabled"] == "0" and "alert_condition" in info:
+                    if "disabled" in info and info["disabled"] == "0" and "alert_type" in info and \
+                        info["alert_type"] != "always":
                         logger.info(
                             f"{obj_type} of type {info['name']} (alert) in app {app} with owner "
                             f"{info['owner']} was enabled but disableAlertsOrReportOnMigration set, "
                             f"setting to disabled"
                         )
                         info["disabled"] = 1
-                    elif "is_scheduled" in info and "alert_condition" not in info and \
+                    elif "is_scheduled" in info and ("alert_type" not in info or ("alert_type" in info and info["alert_type"] == "always")) and \
                             info["is_scheduled"] == "1":
                         info["is_scheduled"] = 0
                         logger.info(
@@ -1017,7 +1018,7 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                             f"owner {info['owner']} was enabled but disableAlertsOrReportOnMigration "
                             f"set, setting to disabled"
                         )
-                    elif "alert_condition" in info:
+                    elif "alert_type" in info and info["alert_type"] != "always":
                         logger.info(
                             f"{obj_type} of type {info['name']} (alert) in app {app} with owner "
                             f"{info['owner']} was enabled but disableAlertsOrReportOnMigration set, "
@@ -1922,8 +1923,9 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
 
         payload = {}
 
-        logger.info(f"Sleeping {enable_sleep_time} seconds before updating the macro")
-        time.sleep(enable_sleep_time)
+        if args.enableSleep:
+            logger.info(f"Sleeping {enable_sleep_time} seconds before updating the macro")
+            time.sleep(enable_sleep_time)
 
         # Remove parts that cannot be posted to the REST API, sharing/owner we change later
         del aMacro["sharing"]
@@ -2104,6 +2106,7 @@ def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntitie
     if ignoreVSID:
         ignoreList.append("vsid")
 
+    # run the saved/searches endpoint
     return runQueries(
         app, "/saved/searches", "savedsearches", ignoreList, destApp,
         destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled,
@@ -2114,6 +2117,7 @@ def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntitie
         override=override, overrideAlways=overrideAlways,
         actionResults=actionResults
     )
+
 ###########################
 #
 # field definitions
@@ -2246,7 +2250,7 @@ def eventtypes(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
 def navMenu(app, destApp, destOwner, noPrivate, noDisabled, includeEntities,
             excludeEntities, includeOwner, excludeOwner, privateOnly, override,
             overrideAlways, actionResults):
-    ignoreList = ["disabled", "eai:appName", "eai:userName", "eai:digest", "rootNode"]
+    ignoreList = ["disabled", "eai:appName", "eai:userName", "eai:digest", "rootNode", "color"]
     # If override we override the default nav menu of the destination app
     return runQueries(
         app, "/data/ui/nav", "navMenu", ignoreList, destApp,
