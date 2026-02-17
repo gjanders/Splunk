@@ -1162,6 +1162,7 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
             # Or perhaps it's app level but we're restoring a private object...
             logger.debug(f"Attempting to JSON loads on {res.text}")
             resDict = json.loads(res.text)
+            updated_time = ""
             for entry in resDict['entry']:
                 sharingLevel = entry['acl']['sharing']
                 appContext = entry['acl']['app']
@@ -1177,6 +1178,7 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
                         f"exist on url {objURL} with sharing of {sharingLevel}, "
                         f"updated time of {updated}"
                     )
+                    updated_time = updated
                 elif (appContext == app and sharing == 'user' and
                     sharingLevel == "user" and remoteObjOwner == owner):
                     objExists = True
@@ -1185,6 +1187,7 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
                         f"exist on url {objURL} with sharing of {sharingLevel}, "
                         f"updated time of {updated}"
                     )
+                    updated_time = updated
                 elif (appContext == app and sharingLevel == "user" and
                     remoteObjOwner == owner and (sharing == "app" or sharing == "global")):
                     logger.debug(
@@ -1192,12 +1195,14 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
                         f"exist on url {objURL} with sharing of {sharingLevel}, "
                         f"updated time of {updated}"
                     )
+                    updated_time = updated
                 else:
                     logger.debug(
                         f"name {name} of type {obj_type} in app context {app}, found the "
                         f"object with this name in sharingLevel {sharingLevel} and "
                         f"appContext {appContext}, updated time of {updated}, url {objURL}"
-                    )        
+                    )
+            updated = updated_time
 
         #Hack to handle the times (conf-times) not including required attributes for creation in existing entries
         #not sure how this happens but it fails to create in 7.0.5 but works fine in 7.2.x, fixing for the older versions
