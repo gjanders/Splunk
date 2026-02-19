@@ -95,7 +95,7 @@ do
             echo "${date} ${app}/$file in system/default/app.conf, reload=true"
         elif exists_in_list "$custom_app_reload" "$file"; then
             echo "${date} ${app}/$file in ${app}/app.conf, reload=true"
-	elif [ $file == "server.conf" ]; then
+	    elif [ $file == "server.conf" ]; then
             count=`grep -vE "^(#|\[|\s*$)" ${app}/default/${file} ${app}/local/${file} 2>/dev/null | grep -v "conf_replication_" | wc -l`
             if [ $count -eq 0 ]; then
                 echo "${date} ${app}/$file appears to have only reload config, reload=true"
@@ -112,7 +112,7 @@ do
                 restart_required_any="True"
             else
                 echo "${date} ${app}/$file appears to have reload config, reload=true"
-	    fi
+	        fi
         else
             echo "${date} ${app}/$file not found, reload=false"
             restart_required="True"
