@@ -668,7 +668,7 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                 visualization_defaults[entry['name']] = entry['content']
 
     # Use count=-1 to ensure we see all the objects
-    url = f"{splunk_rest}/servicesNS/-/{app}{endpoint}?count=-1"
+    url = f"{splunk_rest}/servicesNS/-/{app}{endpoint}?count=-1&search=eai:acl.app={app}"
     logger.debug(f"Running requests.get() on {url} with username {srcUsername} in app {app}")
 
     # Verify=false is hardcoded to workaround local SSL issues
@@ -1111,7 +1111,7 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
         curUpdated = anInfo["updated"]
         del anInfo["updated"]
 
-        url = f"{splunk_rest_dest}/servicesNS/{owner}/{app}/{endpoint}"
+        url = f"{splunk_rest_dest}/servicesNS/{owner}/{app}/{endpoint}?search=eai:acl.app={app}"
         objURL = None
         origName = None
         encoded_name = urllib.parse.quote(name.encode('utf-8'))
@@ -1201,7 +1201,7 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
                         f"name {name} of type {obj_type} in app context {app}, found the "
                         f"object with this name in sharingLevel {sharingLevel} and "
                         f"appContext {appContext}, updated time of {updated}, url {objURL}"
-                    )
+                    ) 
             updated = updated_time
 
         #Hack to handle the times (conf-times) not including required attributes for creation in existing entries
@@ -1210,7 +1210,7 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
             payload["is_sub_menu"] = "0"
 
         if sharing == 'app' or sharing == 'global':
-            url = f"{splunk_rest_dest}/servicesNS/nobody/{app}/{endpoint}"
+            url = f"{splunk_rest_dest}/servicesNS/nobody/{app}/{endpoint}?search=eai:acl.app={app}"
             logger.info(
                 f"name {name} of type {obj_type} in app context {app}, sharing level is "
                 f"non-user so creating with nobody context updated url is {url}"
@@ -1473,7 +1473,7 @@ def macros(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excl
     macros = {}
     # servicesNS/-/-/properties/macros doesn't show private macros so using /configs/conf-macros to find all the macros
     # again with count=-1 to find all the available macros
-    url = f"{splunk_rest}/servicesNS/-/{app}/configs/conf-macros?count=-1"
+    url = f"{splunk_rest}/servicesNS/-/{app}/configs/conf-macros?count=-1&search=eai:acl.app={app}"
     logger.debug(
         f"Running requests.get() on {url} with username {srcUsername} in app {app} for type macro"
     )
