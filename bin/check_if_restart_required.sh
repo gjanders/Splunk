@@ -80,8 +80,8 @@ check_distsearch() {
 for app in ${dir};
 do
     restart_required="False"
-    default=`ls ${app}/default 2>&1 | grep -vE "No such file|data"`;
-    local=`ls ${app}/local 2>&1 | grep -vE "No such file|data"`;
+    default=`find ${app}/default -maxdepth 1 -type f -printf "%f\n" 2>&1 | grep -vE "No such file"`;
+    local=`find ${app}/local -maxdepth 1 -type f -printf "%f\n" 2>&1 | grep -vE "No such file"`;
     combined="$default $local";
     #echo $app $combined
     # if the app has custom triggers for reload attempt to handle this scenario
