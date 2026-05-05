@@ -1001,23 +1001,16 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
 
                 # If we are migrating but leaving the old app enabled in a previous environment
                 # we may not want to leave the report and/or alert enabled
+                # in older Splunk versions you had to set is_scheduled=0 on reports and disabled=1 on alerts
+                # in 9.3.3 and above you can just set disabled on reports/alerts which is more straightforward
                 if disableAlertsOrReportsOnMigration and obj_type == "savedsearches":
-                    if "disabled" in info and info["disabled"] == "0" and "alert_type" in info and \
-                        info["alert_type"] != "always":
+                    if "disabled" in info and info["disabled"] == "0":
                         logger.info(
-                            f"{obj_type} of type {info['name']} (alert) in app {app} with owner "
+                            f"{obj_type} of type {info['name']} (alert or report) in app {app} with owner "
                             f"{info['owner']} was enabled but disableAlertsOrReportOnMigration set, "
                             f"setting to disabled"
                         )
                         info["disabled"] = 1
-                    elif "is_scheduled" in info and ("alert_type" not in info or ("alert_type" in info and info["alert_type"] == "always")) and \
-                            info["is_scheduled"] == "1":
-                        info["is_scheduled"] = 0
-                        logger.info(
-                            f"{obj_type} of type {info['name']} (scheduled report) in app {app} with "
-                            f"owner {info['owner']} was enabled but disableAlertsOrReportOnMigration "
-                            f"set, setting to disabled"
-                        )
                     elif "alert_type" in info and info["alert_type"] != "always":
                         logger.info(
                             f"{obj_type} of type {info['name']} (alert) in app {app} with owner "
@@ -1025,6 +1018,14 @@ def runQueries(app, endpoint, obj_type, fieldIgnoreList, destApp, aliasAttribute
                             f"setting to disabled"
                         )
                         info["disabled"] = 1
+                    else:
+                        logger.info(
+                            f"{obj_type} of type {info['name']} in app {app} with owner and alert_type is {info['alert_type']} (report)"
+                            f"{info['owner']} was enabled but disableAlertsOrReportOnMigration set, "
+                            f"setting to disabled"
+                        )
+                        info["disabled"] = 1
+                
     app = destApp
 
     # Cycle through each one we need to migrate. We process global/app/user
