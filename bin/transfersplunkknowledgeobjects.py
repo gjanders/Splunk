@@ -2082,10 +2082,7 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
 #
 ###########################
 def dashboards(app, destApp, destOwner, noPrivate, noDisabled, includeEntities, excludeEntities, includeOwner, excludeOwner, privateOnly, override, overrideAlways, actionResults):
-    ignoreList = [
-        "disabled", "eai:appName", "eai:digest", "eai:userName", "isDashboard",
-        "isVisible", "label", "rootNode", "description", "version"
-    ]
+    ignoreList = [ "embed.enabled", "embed.expiry", "disabled", "eai:appName", "eai:digest", "eai:userName", "isDashboard", "isVisible", "label", "rootNode", "description", "version" ]
     return runQueries(
         app, "/data/ui/views", "dashboard", ignoreList, destApp,
         destOwner=destOwner, noPrivate=noPrivate, noDisabled=noDisabled,
@@ -2103,7 +2100,7 @@ def savedsearches(app, destApp, destOwner, noPrivate, noDisabled, includeEntitie
                   excludeEntities, includeOwner, excludeOwner, privateOnly,
                   ignoreVSID, disableAlertsOrReportsOnMigration, override,
                   overrideAlways, actionResults):
-    ignoreList = ["embed.enabled", "triggered_alert_count"]
+    ignoreList = [ "embed.enabled", "triggered_alert_count", "next_scheduled_time", "qualifiedSearch" ]
 
     # View states gracefully fail in the GUI, via the REST API you cannot create
     # the saved search if the view state does not exist. However, the same saved
