@@ -1125,18 +1125,18 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
                 f"{name} of type {obj_type} overriding name from {name} to {origName} "
                 f"due to origName existing in config dictionary"
             )
-            objURL = f"{splunk_rest_dest}/servicesNS/-/{app}/{endpoint}/{origName}?output_mode=json"
+            objURL = f"{splunk_rest_dest}/servicesNS/-/{app}/{endpoint}/{origName}?output_mode=json&search=eai:acl.app={app}&count=0"
         else:
             # datamodels do not allow /-/ (or private / user level sharing, only app level)
             if obj_type == "datamodels":
                 objURL = (
                     f"{splunk_rest_dest}/servicesNS/{owner}/{app}/{endpoint}/"
-                    f"{encoded_name}?output_mode=json"
+                    f"{encoded_name}?output_mode=json&search=eai:acl.app={app}&count=0"
                 )
             else:
                 objURL = (
                     f"{splunk_rest_dest}/servicesNS/-/{app}/{endpoint}/"
-                    f"{encoded_name}?output_mode=json"
+                    f"{encoded_name}?output_mode=json&search=eai:acl.app={app}&count=0"
                 )
         logger.debug(f"{name} of type {obj_type} checking on URL {objURL} to see if it exists")
 
