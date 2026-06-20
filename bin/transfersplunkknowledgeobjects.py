@@ -224,6 +224,7 @@ parser.add_argument('-skipDefaults',
                     choices=['source','destination','none'],
                     default='destination')
 parser.add_argument('-enableSleep', help='(optional) This is useful for SHC members and load balancer endpoints. If you cannot hit the same backend each time you have to wait for the object to replicate prior to hitting the /acl endpoint. This enables a 10 second sleep post-object creation',action='store_true')
+parser.add_argument('-dryrun', help='(optional) Runs through the script but does not take the action of creating new knowledge objects or changing ownership',action='store_true')
 
 enable_sleep_time = 10
 args = parser.parse_args()
@@ -392,6 +393,10 @@ def check_and_create_user(host, port, auth_type, username, password, token, user
                 'force-change-pass': '1'  # Force password change on first login
             }
 
+            if args.dryrun:
+                logger.info(f"Dry run mode - user '{user_to_check}' would be created")
+                return True
+
             create_response = make_request(create_url, method='post', auth_type=auth_type,
                                          username=username, password=password, token=token,
                                          data=create_data, verify=False)
@@ -512,6 +517,10 @@ def set_app_acl(host, port, auth_type, username, password, token, app_name, acl_
             acl_data['perms.write'] = str(perms['write'])
 
     try:
+        if args.dryrun:
+            logger.info(f"Dry run mode - would set ACL on app '{app_name}' sharing: {acl_data['sharing']}, owner: {acl_data['owner']}")
+            return True
+
         response = make_request(acl_url, method='post', auth_type=auth_type,
                               username=username, password=password, token=token,
                               data=acl_data, verify=False)
@@ -555,6 +564,10 @@ def check_and_create_app(host, port, auth_type, username, password, token, app_n
     check_url = f"https://{host}:{port}/services/apps/local/{app_name}"
 
     try:
+        if args.dryrun:
+            logger.info(f"Dry run mode - would create app '{app_name}'")
+            return True
+
         response = make_request(check_url, method='get', auth_type=auth_type,
                               username=username, password=password, token=token, verify=False)
 
@@ -1225,6 +1238,11 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
                 f"Attempting to create {obj_type} with name {name} on URL {url} with "
                 f"payload '{payload}' in app {app}"
             )
+
+            if args.dryrun:
+                logger.info(f"Dry run mode - name={name} of type={obj_type} with URL={url} would be created via POST, with payload={payload}. Then the /acl extension of the created object would be used to change to owner={owner} sharing={sharing}")
+                return
+
             res = make_request(
                 url, method='post', auth_type=args.destAuthtype, username=destUsername,
                 password=destPassword, token=args.destToken, data=payload, verify=False
@@ -1411,6 +1429,9 @@ def runQueriesPerList(infoList, destOwner, obj_type, override, app, splunk_rest_
                     f"Attempting to update {obj_type} with name {name} on URL {url} with "
                     f"payload '{payload}' in app {app}"
                 )
+                if args.dryrun:
+                    logger.info(f"Dry run mode - url={url} payload={payload} would be created via POST. Then would use the /acl endpoint on the created object for owner={owner} sharing={sharing}")
+                    return
                 res = make_request(
                     url, method='post', auth_type=args.destAuthtype, username=destUsername,
                     password=destPassword, token=args.destToken, data=payload, verify=False
@@ -1886,6 +1907,11 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
         macroCreationSuccessRes = False
         if not objExists:
             macroCreationSuccessRes = False
+
+            if args.dryrun:
+                logger.info(f"Dry run mode - would create macro with url={url} payload={payload}, then changing ownership to owner={owner} sharing={sharing}")
+                return
+
             res = make_request(
                 url, method='post', auth_type=args.destAuthtype,
                 username=destUsername, password=destPassword,
@@ -1948,6 +1974,11 @@ def macroCreation(macros, destOwner, app, splunk_rest_dest, macroResults, overri
             f"Attempting to modify macro {name} on URL {url} with payload '{payload}' "
             f"in app {app}"
         )
+
+        if args.dryrun:
+            logger.info(f"Dry run mode - url={url} payload={payload}, would change ownership to owner={owner} sharing={sharing}")
+            return
+
         res = make_request(
             url, method='post', auth_type=args.destAuthtype, username=destUsername,
             password=destPassword, token=args.destToken, data=payload, verify=False
