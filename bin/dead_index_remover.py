@@ -1,4 +1,4 @@
-import indextuning_utility as idx_utility
+import indextuning_utility_k8s as idx_utility
 import os
 import shutil
 import logging
