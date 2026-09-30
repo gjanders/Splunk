@@ -39,13 +39,18 @@ keep_list = {
     "_internaldb",
     "_introspection",
     "_telemetry",
+    "authDb",
+    "defaultdb",
+    "db",
     "kvstore",
     "fishbucket",
     "licenses",
     ".snapshots",
     "summarydb",
     ".dirty_database",
-    "persistentstorage"
+    "persistentstorage",
+    "hashDb",
+    "modinputs"
 }
 
 for index in index_list:
@@ -58,11 +63,16 @@ for index in index_list:
    thawed_path = thawed_path.replace("/thaweddb","")
    thawed_path = thawed_path.replace("$SPLUNK_DB/","")
    thawed_path = thawed_path.replace("/opt/splunk/var/lib/splunk/","")
+   summary_path = index_list[index].tstats_home_path
+   summary_path = summary_path.replace("volume:_splunk_summaries/","")
+   summary_path = summary_path.replace("$_index_name", index)
+   summary_path = summary_path[0:summary_path.rfind("/")]
    logging.debug(f"Adding {index} to keep list, along with path {home_path} and thawed_path={thawed_path}")
    keep_list.add(home_path)
    # thawed path can use mixed case, all others default to lowercase
    keep_list.add(thawed_path)
    keep_list.add(index.lower() + ".dat")
+   keep_list.add(summary_path)
 
 AGE_DAYS = 30
 cutoff_time = datetime.now() - timedelta(days=AGE_DAYS)
@@ -80,22 +90,29 @@ def main():
             continue
 
         try:
-            # Special handling for directories containing a db subdirectory
+            # Check all subdirectories under entry
             if entry.is_dir():
-                db_dir = entry / "db"
+                skip_dir = False
 
-                if db_dir.is_dir():
-                    db_mtime = datetime.fromtimestamp(db_dir.stat().st_mtime)
-                    db_age_days = (datetime.now() - db_mtime).days
-
-                    if db_mtime > cutoff_time:
-                        logging.info(
-                            "Skipping dir=%s because db subdir=%s was modified %d days ago",
-                            entry,
-                            db_dir,
-                            db_age_days,
-                        )
+                for subdir in entry.iterdir():
+                    if not subdir.is_dir():
                         continue
+
+                    subdir_mtime = datetime.fromtimestamp(subdir.stat().st_mtime)
+                    subdir_age_days = (datetime.now() - subdir_mtime).days
+
+                    if subdir_mtime > cutoff_time:
+                        logging.info(
+                            "Skipping dir=%s because subdir=%s was modified %d days ago",
+                            entry,
+                            subdir,
+                            subdir_age_days,
+                        )
+                        skip_dir = True
+                        break
+
+                if skip_dir:
+                    continue
 
             # Get modification time of the entry itself
             mtime = datetime.fromtimestamp(entry.stat().st_mtime)
