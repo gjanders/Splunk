@@ -94,7 +94,7 @@ class utility:
         # file names
         logger.debug("Running /opt/splunk/bin/splunk btool indexes list --debug")
         output = check_output(["/opt/splunk/bin/splunk", "btool", "indexes",
-                              "list", "--debug"])
+                              "list", "--debug"]).decode('utf-8')
         output = output.split("\n")
 
         # If we are currently inside a [volume...] stanza or not...
@@ -175,7 +175,11 @@ class utility:
                 elif cur_index.max_data_size.find("auto") != -1:
                     cur_index.max_data_size = "750_auto"
             elif stanza == "maxHotBuckets" and in_index_mode:
-                cur_index.max_hot_buckets = float(value)
+                cur_index.max_hot_buckets = value
+                if value == "auto":
+                    cur_index.max_hot_buckets = 3.0
+                else:
+                    cur_index.max_hot_buckets = float(value)
             # This setting only appears in volumes
             elif stanza == "maxVolumeDataSizeMB" and not in_index_mode:
                 vol.max_vol_data_size_mb = int(value)

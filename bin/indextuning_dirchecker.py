@@ -16,6 +16,10 @@ def check_for_dead_dirs(index_list, vol_list, excluded_dirs, utility):
 
     # Splunk uses the $SPLUNK_DB variable to specify the default location of the data
     splunkDBLoc = os.environ['SPLUNK_DB']
+    if len(index_list) < 50:
+        logger.error(f"Index list is less than 50, size={len(index_list)}, cancelling this check")
+        return
+
     for index in index_list:
         # expecting something similar to
         # home_path = volume:hot/$_index_name/db
@@ -90,19 +94,27 @@ def check_for_dead_dirs(index_list, vol_list, excluded_dirs, utility):
         thawed_path_dir = thawed_path[:thawed_path.rfind("/")]
 
         # keep the dictionary up-to-date with directories that must be checked
-        index_dirs_to_check_hot[home_path_dir] = True
-        index_dirs_to_check_cold[cold_path_dir] = True
-        summary_dirs_to_check[tstats_home_path_dir] = True
-        index_dirs_to_check_thawed[thawed_path_dir] = True
+        if home_path_dir != "":
+            index_dirs_to_check_hot[home_path_dir] = True
+        if cold_path_dir != "":
+            index_dirs_to_check_cold[cold_path_dir] = True
+        if tstats_home_path_dir != "":
+            summary_dirs_to_check[tstats_home_path_dir] = True
+        if thawed_path_dir != "":
+            index_dirs_to_check_thawed[thawed_path_dir] = True
 
         logger.debug("dead dirs postchanges index=%s home_path=%s cold_path=%s tstats_home_path=%s thawed_path=%s cold_to_frozen_dir=%s" % (index, home_path, cold_path, tstats_home_path, thawed_path, cold_to_frozen_dir))
 
     # At this point we know what indexes we need to check
-    dead_index_dir_list_hot = check_dirs(index_list, index_dirs_to_check_hot, excluded_dirs, utility)
-    dead_index_dir_list_cold = check_dirs(index_list, index_dirs_to_check_cold, excluded_dirs, utility)
-    dead_index_dir_list_summaries = check_dirs(index_list, summary_dirs_to_check, excluded_dirs, utility)
-    dead_index_dir_list_thawed = check_dirs(index_list, index_dirs_to_check_thawed, excluded_dirs, utility)
-
+    excluded_dirs_dict = {item: "true" for item in excluded_dirs }
+    excluded_dirs_safe = index_dirs_to_check_cold | summary_dirs_to_check | index_dirs_to_check_thawed | excluded_dirs_dict
+    dead_index_dir_list_hot = check_dirs(index_list, index_dirs_to_check_hot, excluded_dirs_safe, utility)
+    excluded_dirs_safe = index_dirs_to_check_hot | summary_dirs_to_check | index_dirs_to_check_thawed | excluded_dirs_dict
+    dead_index_dir_list_cold = check_dirs(index_list, index_dirs_to_check_cold, excluded_dirs_safe, utility)
+    excluded_dirs_safe = index_dirs_to_check_hot | index_dirs_to_check_cold | index_dirs_to_check_thawed | excluded_dirs_dict
+    dead_index_dir_list_summaries = check_dirs(index_list, summary_dirs_to_check, excluded_dirs_safe, utility)
+    excluded_dirs_safe = index_dirs_to_check_hot | index_dirs_to_check_cold | summary_dirs_to_check | excluded_dirs_dict
+    dead_index_dir_list_thawed = check_dirs(index_list, index_dirs_to_check_thawed, excluded_dirs_safe, utility)
     logger.debug("Returning these lists to be checked: dead_index_dir_list_hot=\"%s\", dead_index_dir_list_cold=\"%s\", dead_index_dir_list_summaries=\"%s\", dead_index_dir_list_thawed=\"%s\""
                   % (dead_index_dir_list_hot, dead_index_dir_list_cold, dead_index_dir_list_summaries, dead_index_dir_list_thawed))
     return { "hot_dirs_checked" : index_dirs_to_check_hot, "hot_dirs_dead": dead_index_dir_list_hot, "cold_dirs_checked" : index_dirs_to_check_cold,
@@ -150,7 +162,7 @@ def check_dirs(index_list, dirsToCheck, excluded_dirs, utility):
                     break
                 else:
                     # don't include the excluded directories
-                    if dir in excluded_dirs:
+                    if dir in excluded_dirs or abs_dir in excluded_dirs:
                         logger.debug("dir=%s is excluded so marking it found" % (dir))
                         found = True
                         break
@@ -174,7 +186,7 @@ def check_dirs(index_list, dirsToCheck, excluded_dirs, utility):
             found2 = False
             for a_dir in sub_dir_list:
                 #These are always excluded as they should never be deleted
-                if dir in excluded_dirs:
+                if dir in excluded_dirs or abs_dir in excluded_dirs:
                     continue
                 abs_dir2 = abs_dir + "/" + a_dir
                 for index in index_list:
@@ -192,3 +204,4 @@ def check_dirs(index_list, dirsToCheck, excluded_dirs, utility):
                     logger.debug("dir=%s appears to be unused, adding to the list" % (dead_dir))
 
     return dead_dir_list
+
