@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
+import sys
 
 log_file = "/opt/splunk/var/log/splunk/dead_index_cleaner.log"
 
@@ -33,6 +34,9 @@ logging.info("Begin script")
 
 # Determine the index/volume list we are working with
 index_list, vol_list = utility.parse_btool_output()
+if len(index_list) < 50:
+    logging.warning(f"Less than 50 indexes found. count={len(index_list)} exiting the script as this might be invalid output")
+    sys.exit(1)
 
 # List of files/directories that must be retained
 keep_list = {
