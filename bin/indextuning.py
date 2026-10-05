@@ -12,6 +12,7 @@ import argparse
 import logging
 from logging.config import dictConfig
 import requests
+import time
 from requests.auth import HTTPBasicAuth
 from index_bucket_sizing import run_bucket_sizing
 from index_tuning_presteps import index_tuning_presteps
@@ -519,9 +520,39 @@ if index_dir_check_res:
                 line = line.replace('\\ ',' ')
                 thedir = entry + "/" + line
                 if args.deadIndexDelete and not line == "\\$_index_name":
+                    cutoff_time = time.time() - (30 * 24 * 60 * 60)  # 30 days ago
+
                     if os.path.isdir(thedir):
-                        logger.info("Wiping directory %s" % (thedir))
-                        shutil.rmtree(thedir)
+                        # Check the top-level directory first
+                        if os.path.getmtime(thedir) > cutoff_time:
+                            logger.info(
+                                "Skipping directory %s because it was modified within the last 30 days",
+                                thedir,
+                            )
+                            continue
+                        recent_subdir = False
+
+                        # Check all subdirectories
+                        for root, dirs, files in os.walk(thedir):
+                            for dirname in dirs:
+                                subdir = os.path.join(root, dirname)
+
+                                if os.path.getmtime(subdir) > cutoff_time:
+                                    logger.warning(
+                                        "Skipping directory %s because subdirectory %s was modified within the last 30 days",
+                                        thedir,
+                                        subdir,
+                                    )
+                                    recent_subdir = True
+                                    break
+                            if recent_subdir:
+                                break
+
+                        if recent_subdir:
+                            continue
+
+                        logger.info("Wiping directory %s", thedir)
+                        Shutil.rmtree(thedir)
                     else:
                         logger.warn("dir=%s does not exist, no deletion required" % (thedir))
                 else:
